@@ -287,12 +287,15 @@ class Provisioner extends RemoteScript
      */
     protected function tuneNginx(): void
     {
+        // gzip is already enabled (`gzip on;`) in the stock nginx.conf http
+        // block, which also includes this file — so re-declaring it here would
+        // be a duplicate directive and fail `nginx -t`. We only set the tuning
+        // sub-directives, which the stock config ships commented out.
         $this->connection->put('/etc/nginx/conf.d/bosun.conf', implode("\n", [
             '# Managed by bosun.',
             'server_names_hash_bucket_size 128;',
             'client_max_body_size 64m;',
             '',
-            'gzip on;',
             'gzip_comp_level 5;',
             'gzip_min_length 256;',
             'gzip_proxied any;',

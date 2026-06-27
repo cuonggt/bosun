@@ -267,8 +267,12 @@ class ProvisionerTest extends TestCase
         $this->assertArrayHasKey('/etc/nginx/conf.d/bosun.conf', $connection->files);
 
         $conf = $connection->files['/etc/nginx/conf.d/bosun.conf'];
-        $this->assertStringContainsString('gzip on;', $conf);
+        $this->assertStringContainsString('gzip_comp_level 5;', $conf);
         $this->assertStringContainsString('client_max_body_size 64m;', $conf);
+
+        // gzip is already enabled by the stock nginx.conf; re-declaring it here
+        // would be a duplicate directive that fails `nginx -t`.
+        $this->assertStringNotContainsString('gzip on', $conf);
 
         // We keep the stock www-data worker user, so the tuning never rewrites it.
         $this->assertStringNotContainsString('user ', $conf);
