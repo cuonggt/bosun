@@ -128,6 +128,25 @@ class ProvisionerTest extends TestCase
         );
     }
 
+    public function test_it_installs_a_build_toolchain_and_runtime_deps(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Compiler toolchain so deploy-time `npm run build` can build native modules.
+        $this->assertStringContainsString('build-essential', $ran);
+        $this->assertStringContainsString('pkg-config', $ran);
+        // cron for the scheduler, jq for deploy hooks.
+        $this->assertStringContainsString('jq', $ran);
+        $this->assertMatchesRegularExpression('/\bcron\b/', $ran);
+
+        // Forge's bloat we deliberately leave out.
+        $this->assertStringNotContainsString('sendmail', $ran);
+        $this->assertStringNotContainsString('libmcrypt4', $ran);
+    }
+
     public function test_it_installs_the_expected_stack(): void
     {
         $connection = new FakeConnection();

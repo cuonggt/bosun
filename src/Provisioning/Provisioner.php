@@ -24,8 +24,17 @@ class Provisioner extends RemoteScript
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
         $this->task('Upgrading installed packages', $this->aptUpgrade());
-        $this->task('Installing base utilities', $this->aptInstall(
-            'software-properties-common', 'curl', 'wget', 'git', 'unzip', 'zip', 'acl', 'ufw', 'gnupg', 'ca-certificates'
+        $this->task('Installing base packages', $this->aptInstall(
+            // Connectivity, archives and repository management.
+            'software-properties-common', 'curl', 'wget', 'git', 'unzip', 'zip', 'gnupg', 'ca-certificates',
+            // Permissions (setfacl) and firewall.
+            'acl', 'ufw',
+            // Build toolchain — `npm run build` and pecl routinely compile native
+            // modules (node-gyp), which fail without a compiler and pkg-config.
+            'build-essential', 'pkg-config',
+            // Laravel runtime needs: cron drives the scheduler, sqlite3 backs the
+            // default/local DB, jq parses JSON in deploy hooks.
+            'cron', 'sqlite3', 'jq'
         ));
 
         $this->task('Adding the PHP repository (ondrej/php)', $this->phpRepository());
