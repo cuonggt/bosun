@@ -15,6 +15,10 @@ class ProvisionerTest extends TestCase
             'deploy_user' => 'deployer',
             'deploy_path' => '/home/deployer/app',
             'domain' => 'example.com',
+            'database_name' => 'app',
+            'database_user' => 'app',
+            'database_password' => 'app-secret-pw',
+            'database_root_password' => 'root-secret-pw',
             'queue_connection' => '',
             'queue_processes' => 2,
         ], $overrides);
@@ -50,6 +54,85 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('supervisor', $ran);
         $this->assertStringContainsString('deb.nodesource.com/setup_20.x', $ran);
         $this->assertStringContainsString('certbot', $ran);
+    }
+
+    public function test_it_installs_mysql_non_interactively_with_a_preseeded_root_password(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Preseed the root password through debconf so the install never blocks
+        // on a prompt (the cause of the dpkg "followup error" failure).
+        $this->assertStringContainsString('debconf-set-selections', $ran);
+        $this->assertStringContainsString('mysql-community-server/root-pass password root-secret-pw', $ran);
+        $this->assertStringContainsString('DEBIAN_FRONTEND=noninteractive', $ran);
+    }
+
+    public function test_it_bootstraps_the_application_database_and_user(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Idempotent CREATE statements run as root over the local socket.
+        // (Single quotes are rewritten by escapeshellarg, so assert on the
+        // backtick-quoted identifiers and password, which survive escaping.)
+        $this->assertStringContainsString('CREATE DATABASE IF NOT EXISTS `app` CHARACTER SET utf8mb4', $ran);
+        $this->assertStringContainsString('CREATE USER IF NOT EXISTS', $ran);
+        $this->assertStringContainsString('app-secret-pw', $ran);
+        $this->assertStringContainsString('GRANT ALL PRIVILEGES ON `app`.*', $ran);
+    }
+
+    public function test_it_does_not_bootstrap_a_database_for_other_engines(): void
+    {
+        foreach (['pgsql', 'none'] as $database) {
+            $connection = new FakeConnection();
+            (new Provisioner($connection, $this->server($database), $this->config()))->execute();
+
+            $this->assertStringNotContainsString('CREATE DATABASE', $connection->ranAll());
+        }
+    }
+
+    public function test_it_records_database_credentials_for_deploys(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertArrayHasKey('/home/deployer/app/shared/.bosun-database.env', $connection->files);
+
+        $creds = $connection->files['/home/deployer/app/shared/.bosun-database.env'];
+        $this->assertStringContainsString('DB_DATABASE=app', $creds);
+        $this->assertStringContainsString('DB_USERNAME=app', $creds);
+        $this->assertStringContainsString('DB_PASSWORD=app-secret-pw', $creds);
+
+        // Locked down: only the deploy user may read the password.
+        $this->assertStringContainsString('chmod 600 /home/deployer/app/shared/.bosun-database.env', $connection->ranAll());
+    }
+
+    public function test_it_does_not_record_credentials_for_other_engines(): void
+    {
+        foreach (['pgsql', 'none'] as $database) {
+            $connection = new FakeConnection();
+            (new Provisioner($connection, $this->server($database), $this->config()))->execute();
+
+            $this->assertArrayNotHasKey('/home/deployer/app/shared/.bosun-database.env', $connection->files);
+        }
+    }
+
+    public function test_it_recovers_half_configured_packages_so_reruns_are_clean(): void
+    {
+        // Provisioning starts by finishing any package a previous interrupted
+        // run left half-configured; otherwise apt fails for the rest of the run
+        // and `setup` can never recover. Runs regardless of the chosen database.
+        foreach (['mysql', 'pgsql', 'none'] as $database) {
+            $connection = new FakeConnection();
+            (new Provisioner($connection, $this->server($database), $this->config()))->execute();
+
+            $this->assertStringContainsString('dpkg --configure -a', $connection->ranAll());
+        }
     }
 
     public function test_it_creates_an_unprivileged_deploy_user(): void

@@ -54,6 +54,14 @@ class DeploymentRunner extends RemoteScript
 
         $this->task('Recording the deployed commit', fn () => $this->recordRevision($release));
         $this->task('Linking shared files and directories', fn () => $this->linkShared($release));
+
+        if ($this->firstDeploy) {
+            // shared/.env was just seeded from .env.example. Overlay the database
+            // credentials provisioning recorded so the app can reach MySQL out of
+            // the box. Only on the first deploy — after that shared/.env is the
+            // operator's to edit and we never touch it again.
+            $this->task('Writing database credentials to .env', fn () => $this->writeDatabaseEnv());
+        }
         $this->task(
             'Installing Composer dependencies',
             "cd {$release} && composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader"
@@ -129,6 +137,24 @@ class DeploymentRunner extends RemoteScript
         }
 
         $this->execChain($commands);
+    }
+
+    protected function writeDatabaseEnv(): void
+    {
+        $env = $this->path().'/shared/.env';
+        $creds = $this->databaseCredentialsPath();
+
+        // Replace any DB_ keys the seed left behind, then append the recorded
+        // block verbatim. Appending the file (rather than interpolating values
+        // into the command) keeps passwords with shell metacharacters intact.
+        // No-op when provisioning didn't record credentials (e.g. pgsql/none).
+        $managed = 'DB_CONNECTION|DB_HOST|DB_PORT|DB_DATABASE|DB_USERNAME|DB_PASSWORD';
+
+        $this->exec(
+            "if [ -f {$creds} ]; then "
+            ."sed -i -E '/^({$managed})=/d' {$env} && cat {$creds} >> {$env}; "
+            .'fi'
+        );
     }
 
     protected function optimize(string $release): void

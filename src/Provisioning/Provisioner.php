@@ -29,7 +29,10 @@ class Provisioner extends RemoteScript
 
         $this->task('Installing Nginx', $this->aptInstall('nginx'));
 
-        if ($db = $this->databasePackages()) {
+        if ($this->server->database === 'mysql') {
+            $this->task('Installing MySQL', $this->installMysql());
+            $this->task('Creating the application database', $this->bootstrapMysql());
+        } elseif ($db = $this->databasePackages()) {
             $this->task('Installing the database server', $this->aptInstall(...$db));
         }
 
@@ -42,6 +45,10 @@ class Provisioner extends RemoteScript
         $this->task('Granting service-control permissions', fn () => $this->configureSudoers());
         $this->task('Configuring the firewall', $this->configureFirewall());
         $this->task('Preparing the application directory', fn () => $this->prepareDeployPath());
+
+        if ($this->server->database === 'mysql') {
+            $this->task('Recording database credentials for deploys', fn () => $this->storeDatabaseCredentials());
+        }
         $this->task('Configuring the Nginx site', fn () => $this->configureNginx());
         $this->task('Configuring the queue worker', fn () => $this->configureSupervisor());
         $this->task('Enabling and restarting services', $this->restartServices());
@@ -53,7 +60,13 @@ class Provisioner extends RemoteScript
 
     protected function aptUpdate(): string
     {
-        return 'export DEBIAN_FRONTEND=noninteractive && apt-get update -y';
+        // `dpkg --configure -a` first finishes configuring anything a previous
+        // interrupted run left half-installed. Without it, that leftover state
+        // makes every later apt step fail with "Sub-process /usr/bin/dpkg
+        // returned an error code (1)", so re-running `setup` could never
+        // recover. This runs as the first provisioning task (and again after
+        // the PHP repository is added), making re-runs self-healing.
+        return 'export DEBIAN_FRONTEND=noninteractive && dpkg --configure -a && apt-get update -y';
     }
 
     protected function aptInstall(string ...$packages): string
@@ -96,10 +109,66 @@ class Provisioner extends RemoteScript
     protected function databasePackages(): array
     {
         return match ($this->server->database) {
-            'mysql' => ['mysql-server'],
             'pgsql', 'postgres', 'postgresql' => ['postgresql', 'postgresql-contrib'],
             default => [],
         };
+    }
+
+    /**
+     * Install MySQL the way Forge does: preseed the root password through
+     * debconf so the package configures non-interactively. Without this the
+     * postinst blocks on a password prompt that can't be answered over SSH,
+     * leaving dpkg half-configured and failing every later apt step with a
+     * "Sub-process /usr/bin/dpkg returned an error code (1)" followup error.
+     */
+    protected function installMysql(): string
+    {
+        $password = $this->config['database_root_password'];
+
+        // Preseed the answers, then install. Both the Oracle
+        // (mysql-community-server) and Debian (mysql-server) debconf keys are
+        // set so the same recipe works regardless of which package provides it.
+        // Half-configured state from an interrupted run is already recovered by
+        // aptUpdate()'s `dpkg --configure -a` earlier in the same provision.
+        $selections = implode("\n", [
+            "mysql-community-server mysql-community-server/root-pass password {$password}",
+            "mysql-community-server mysql-community-server/re-root-pass password {$password}",
+            "mysql-server mysql-server/root_password password {$password}",
+            "mysql-server mysql-server/root_password_again password {$password}",
+        ])."\n";
+
+        return implode(' && ', [
+            'export DEBIAN_FRONTEND=noninteractive',
+            sprintf('printf %s | debconf-set-selections', escapeshellarg($selections)),
+            'apt-get install -y mysql-server',
+        ]);
+    }
+
+    /**
+     * Create the application database and a user that owns it — the rest of
+     * Forge's MySQL bootstrap. The user is reachable from any host ('%') so the
+     * app can connect over TCP.
+     *
+     * Runs as root over the local socket (auth_socket on a stock Ubuntu
+     * install, so no password is needed). Every statement is idempotent: the
+     * database and user are only created if missing — notably the user's
+     * password is set just once, at creation, so re-provisioning never rotates
+     * it out from under a running application.
+     */
+    protected function bootstrapMysql(): string
+    {
+        $name = $this->config['database_name'];
+        $user = $this->config['database_user'];
+        $password = $this->config['database_password'];
+
+        $sql = implode(' ', [
+            "CREATE DATABASE IF NOT EXISTS `{$name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;",
+            "CREATE USER IF NOT EXISTS '{$user}'@'%' IDENTIFIED BY '{$password}';",
+            "GRANT ALL PRIVILEGES ON `{$name}`.* TO '{$user}'@'%';",
+            'FLUSH PRIVILEGES;',
+        ]);
+
+        return sprintf('mysql --no-defaults -e %s', escapeshellarg($sql));
     }
 
     protected function installNode(): string
@@ -190,6 +259,33 @@ class Provisioner extends RemoteScript
             // Owned by the deploy user, group www-data so Nginx can read it.
             "chown -R {$user}:www-data {$path}",
             "chmod -R 2755 {$path}",
+        ]);
+    }
+
+    /**
+     * Record the application database credentials on the server so the deploy
+     * can write them into shared/.env. Kept out of any release, owned by the
+     * deploy user and locked to 0600 since it holds the database password.
+     */
+    protected function storeDatabaseCredentials(): void
+    {
+        $user = $this->config['deploy_user'];
+        $file = $this->databaseCredentialsPath();
+
+        $env = implode("\n", [
+            'DB_CONNECTION=mysql',
+            'DB_HOST=127.0.0.1',
+            'DB_PORT=3306',
+            "DB_DATABASE={$this->config['database_name']}",
+            "DB_USERNAME={$this->config['database_user']}",
+            "DB_PASSWORD={$this->config['database_password']}",
+        ])."\n";
+
+        $this->connection->put($file, $env);
+
+        $this->execChain([
+            "chown {$user}:{$user} {$file}",
+            "chmod 600 {$file}",
         ]);
     }
 

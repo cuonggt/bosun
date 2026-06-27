@@ -2,6 +2,7 @@
 
 namespace Cuonggt\Bosun\Concerns;
 
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Cuonggt\Bosun\Server;
 use Cuonggt\Bosun\Ssh\Connection;
@@ -63,9 +64,23 @@ trait InteractsWithServers
         $deployPath = $serverConfig['deploy_path'] ?? config('bosun.deploy_path', '/home/deployer/{application}');
         $deployPath = str_replace('{application}', $application, $deployPath);
 
+        // Application database credentials. Name and user default to the
+        // application slug (with hyphens swapped for underscores, which MySQL
+        // identifiers prefer). Passwords are generated when not set explicitly;
+        // the root password is only used to preseed the install.
+        $databaseDefault = str_replace('-', '_', $application);
+        $databaseName = $serverConfig['database_name'] ?? config('bosun.database_name') ?: $databaseDefault;
+        $databaseUser = $serverConfig['database_user'] ?? config('bosun.database_user') ?: $databaseDefault;
+        $databasePassword = $serverConfig['database_password'] ?? config('bosun.database_password') ?: Str::random(32);
+        $databaseRootPassword = $serverConfig['database_root_password'] ?? config('bosun.database_root_password') ?: Str::random(32);
+
         return [
             'application' => $application,
             'deploy_user' => $server->username,
+            'database_name' => $databaseName,
+            'database_user' => $databaseUser,
+            'database_password' => $databasePassword,
+            'database_root_password' => $databaseRootPassword,
             'deploy_path' => $deployPath,
             'domain' => $serverConfig['domain'] ?? config('bosun.domain'),
             'repository' => $serverConfig['repository'] ?? config('bosun.repository'),

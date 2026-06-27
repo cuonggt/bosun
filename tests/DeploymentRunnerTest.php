@@ -130,6 +130,32 @@ class DeploymentRunnerTest extends TestCase
         $this->assertStringContainsString('php artisan migrate --force', $connection->ranAll());
     }
 
+    public function test_first_deploy_writes_database_credentials_into_env(): void
+    {
+        $connection = new FakeConnection();
+        $connection->respondTo('test -L /home/deployer/app/current', 1);
+
+        (new DeploymentRunner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Strip the seeded DB_ keys, then append the recorded credentials file.
+        $this->assertStringContainsString('/home/deployer/app/shared/.bosun-database.env', $ran);
+        $this->assertStringContainsString('sed -i -E', $ran);
+        $this->assertStringContainsString('cat /home/deployer/app/shared/.bosun-database.env >> /home/deployer/app/shared/.env', $ran);
+    }
+
+    public function test_subsequent_deploys_do_not_touch_env(): void
+    {
+        $connection = new FakeConnection();
+        $connection->respondTo('test -L /home/deployer/app/current', 0);
+
+        (new DeploymentRunner($connection, $this->server(), $this->config()))->execute();
+
+        // shared/.env belongs to the operator after the first deploy.
+        $this->assertStringNotContainsString('.bosun-database.env', $connection->ranAll());
+    }
+
     public function test_hooks_run_in_their_phases(): void
     {
         $connection = new FakeConnection();

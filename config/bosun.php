@@ -70,6 +70,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Database
+    |--------------------------------------------------------------------------
+    |
+    | Provisioning creates an application database and a user that owns it.
+    | These map straight onto your .env: "name"/"user"/"password" become
+    | DB_DATABASE / DB_USERNAME / DB_PASSWORD. The "name" and "user" default to
+    | the application slug; leave the passwords empty to have them generated.
+    |
+    | The user password is set only when the user is first created, so a
+    | re-provision never rotates it out from under a running app.
+    |
+    */
+
+    'database_name' => env('DEPLOY_DATABASE_NAME'),
+
+    'database_user' => env('DEPLOY_DATABASE_USER'),
+
+    'database_password' => env('DEPLOY_DATABASE_PASSWORD'),
+
+    'database_root_password' => env('DEPLOY_DATABASE_ROOT_PASSWORD'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Repository
     |--------------------------------------------------------------------------
     |

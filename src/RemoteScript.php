@@ -36,6 +36,16 @@ abstract class RemoteScript
     abstract public function execute(): void;
 
     /**
+     * Path to the file where provisioning records the application database
+     * credentials, so deploys can write them into shared/.env. Lives in
+     * "shared" (outside any release) and is readable only by the deploy user.
+     */
+    protected function databaseCredentialsPath(): string
+    {
+        return rtrim($this->config['deploy_path'], '/').'/shared/.bosun-database.env';
+    }
+
+    /**
      * Provide the closure used to render and run each task.
      *
      * @param  Closure(string, Closure|string): void  $runner
