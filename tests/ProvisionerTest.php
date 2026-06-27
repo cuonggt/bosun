@@ -56,6 +56,35 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('certbot', $ran);
     }
 
+    public function test_apt_runs_without_blocking_on_locks_or_prompts(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Waits out unattended-upgrades instead of racing it to the dpkg lock.
+        $this->assertStringContainsString('fuser /var/lib/dpkg/lock', $ran);
+        $this->assertStringContainsString('/var/lib/dpkg/lock-frontend', $ran);
+        // Keeps existing config files instead of opening an interactive prompt.
+        $this->assertStringContainsString('--force-confold', $ran);
+        // Switches needrestart to automatic so library upgrades don't stall.
+        $this->assertStringContainsString('/etc/needrestart/needrestart.conf', $ran);
+    }
+
+    public function test_apt_lock_wait_precedes_the_first_install(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        // Every install command carries its own lock wait, so the snippet
+        // appears at least as often as there are apt-get install invocations.
+        $waits = substr_count($connection->ranAll(), 'Waiting for apt/dpkg lock');
+        $installs = substr_count($connection->ranAll(), 'apt-get install');
+
+        $this->assertGreaterThanOrEqual($installs, $waits);
+    }
+
     public function test_it_installs_mysql_non_interactively_with_a_preseeded_root_password(): void
     {
         $connection = new FakeConnection();

@@ -18,6 +18,7 @@ class Provisioner extends RemoteScript
         $php = $this->server->phpVersion;
         $user = $this->config['deploy_user'];
 
+        $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
         $this->task('Installing base utilities', $this->aptInstall(
             'software-properties-common', 'curl', 'wget', 'git', 'unzip', 'zip', 'acl', 'ufw', 'gnupg', 'ca-certificates'
@@ -60,19 +61,55 @@ class Provisioner extends RemoteScript
 
     protected function aptUpdate(): string
     {
-        // `dpkg --configure -a` first finishes configuring anything a previous
-        // interrupted run left half-installed. Without it, that leftover state
-        // makes every later apt step fail with "Sub-process /usr/bin/dpkg
-        // returned an error code (1)", so re-running `setup` could never
-        // recover. This runs as the first provisioning task (and again after
-        // the PHP repository is added), making re-runs self-healing.
-        return 'export DEBIAN_FRONTEND=noninteractive && dpkg --configure -a && apt-get update -y';
+        // Wait for any apt/dpkg lock first, then `dpkg --configure -a` finishes
+        // configuring anything a previous interrupted run left half-installed.
+        // Without it, that leftover state makes every later apt step fail with
+        // "Sub-process /usr/bin/dpkg returned an error code (1)", so re-running
+        // `setup` could never recover. This runs as the first apt task (and
+        // again after the PHP repository is added), making re-runs self-healing.
+        return $this->aptWait()
+            .' && export DEBIAN_FRONTEND=noninteractive && dpkg --configure -a && apt-get update -y';
     }
 
     protected function aptInstall(string ...$packages): string
     {
-        return 'export DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends '
+        // --force-confold/--force-confdef keep existing config files (or use the
+        // package default) instead of opening an interactive "keep or replace?"
+        // prompt, which would otherwise hang an unattended run on any upgrade.
+        return $this->aptWait()
+            .' && export DEBIAN_FRONTEND=noninteractive && apt-get install -y '
+            .'-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" '
+            .'--no-install-recommends '
             .implode(' ', $packages);
+    }
+
+    /**
+     * A self-contained shell snippet that blocks until no other process holds an
+     * apt or dpkg lock. On a fresh boot `unattended-upgrades` often runs for the
+     * first few minutes; without this, the first apt command races it and dies
+     * with "Could not get lock /var/lib/dpkg/lock-frontend". Bounded to ~5
+     * minutes so a genuinely stuck lock can't hang provisioning forever, and
+     * wrapped in a subshell so it chains cleanly with `&&`.
+     */
+    protected function aptWait(): string
+    {
+        return '( n=0; while fuser /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend '
+            .'/var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do '
+            .'n=$((n+1)); [ "$n" -ge 60 ] && break; '
+            .'echo "Waiting for apt/dpkg lock..."; sleep 5; done )';
+    }
+
+    /**
+     * Make apt fully non-interactive before the first install. Ubuntu 22.04
+     * ships needrestart in interactive mode, which pops a full-screen prompt
+     * when a library upgrade wants services restarted — stalling an automated
+     * run. Switching it to automatic ('a') lets installs proceed unattended.
+     */
+    protected function configureUnattendedApt(): string
+    {
+        return '[ -f /etc/needrestart/needrestart.conf ] && '
+            .'sed -i "s/^#\$nrconf{restart} = \'i\';/\$nrconf{restart} = \'a\';/" '
+            .'/etc/needrestart/needrestart.conf || true';
     }
 
     protected function phpRepository(): string
