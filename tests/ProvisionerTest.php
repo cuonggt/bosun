@@ -87,6 +87,26 @@ class ProvisionerTest extends TestCase
         );
     }
 
+    public function test_it_configures_swap_and_vm_tuning(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // A swapfile, created only when the box has no swap yet, persisted in fstab.
+        $this->assertStringContainsString('swapon --show', $ran);
+        $this->assertStringContainsString('mkswap /swapfile', $ran);
+        $this->assertStringContainsString('/etc/fstab', $ran);
+
+        // VM tuning lands in a sysctl.d drop-in, then is applied.
+        $this->assertArrayHasKey('/etc/sysctl.d/99-bosun.conf', $connection->files);
+        $sysctl = $connection->files['/etc/sysctl.d/99-bosun.conf'];
+        $this->assertStringContainsString('vm.swappiness = 30', $sysctl);
+        $this->assertStringContainsString('vm.vfs_cache_pressure = 50', $sysctl);
+        $this->assertStringContainsString('sysctl --system', $ran);
+    }
+
     public function test_it_installs_the_expected_stack(): void
     {
         $connection = new FakeConnection();

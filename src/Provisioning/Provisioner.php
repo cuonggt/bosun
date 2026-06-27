@@ -20,6 +20,7 @@ class Provisioner extends RemoteScript
 
         $this->task('Checking the operating system', $this->assertSupportedOs());
         $this->task('Preferring IPv4 for reliable networking', $this->preferIpv4());
+        $this->task('Configuring swap', fn () => $this->configureSwap());
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
         $this->task('Installing base utilities', $this->aptInstall(
@@ -104,6 +105,40 @@ class Provisioner extends RemoteScript
     {
         return 'grep -qE \'^precedence ::ffff:0:0/96\' /etc/gai.conf 2>/dev/null '
             .'|| echo \'precedence ::ffff:0:0/96  100\' >> /etc/gai.conf';
+    }
+
+    /**
+     * Give a memory-constrained box a 1G swapfile so a heavy composer/npm step
+     * can't OOM mid-provision or mid-deploy, plus the VM tuning Forge pairs with
+     * it (swappiness 30, vfs_cache_pressure 50).
+     *
+     * Only created when the server has no swap at all — a swapfile or a swap
+     * partition the provider may already have set up — which is a touch smarter
+     * than Forge's "does /swapfile exist" check. fallocate is fastest, with a dd
+     * fallback for filesystems where a fallocate'd file isn't valid swap; the
+     * fstab entry survives reboots. The sysctl settings go in a sysctl.d drop-in
+     * (overwritten each run) rather than appended to sysctl.conf.
+     */
+    protected function configureSwap(): void
+    {
+        $this->exec(implode(' ', [
+            'if [ -z "$(swapon --show 2>/dev/null)" ] && [ ! -f /swapfile ]; then',
+            'fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024;',
+            'chmod 600 /swapfile;',
+            'mkswap /swapfile;',
+            'swapon /swapfile;',
+            'grep -q "^/swapfile " /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab;',
+            'fi',
+        ]));
+
+        $this->connection->put('/etc/sysctl.d/99-bosun.conf', implode("\n", [
+            '# Managed by bosun.',
+            'vm.swappiness = 30',
+            'vm.vfs_cache_pressure = 50',
+            '',
+        ]));
+
+        $this->exec('sysctl --system >/dev/null');
     }
 
     protected function aptUpdate(): string
