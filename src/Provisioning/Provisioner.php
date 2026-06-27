@@ -23,6 +23,7 @@ class Provisioner extends RemoteScript
         $this->task('Configuring swap', fn () => $this->configureSwap());
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
+        $this->task('Upgrading installed packages', $this->aptUpgrade());
         $this->task('Installing base utilities', $this->aptInstall(
             'software-properties-common', 'curl', 'wget', 'git', 'unzip', 'zip', 'acl', 'ufw', 'gnupg', 'ca-certificates'
         ));
@@ -151,6 +152,23 @@ class Provisioner extends RemoteScript
         // again after the PHP repository is added), making re-runs self-healing.
         return $this->aptWait()
             .' && export DEBIAN_FRONTEND=noninteractive && dpkg --configure -a && apt-get update -y';
+    }
+
+    /**
+     * Bring every already-installed package up to date. A "fresh" cloud image is
+     * often weeks or months stale, so this closes the initial patch gap that
+     * unattended-upgrades only covers going forward. Plain `upgrade` (never
+     * `dist-upgrade`) so nothing is removed and the kernel isn't swapped.
+     *
+     * The conf flags matter most here: an upgrade is exactly when dpkg meets a
+     * changed config file and would otherwise stop on a "keep or replace?"
+     * prompt. (Forge runs the upgrade without them — arguably a gap.)
+     */
+    protected function aptUpgrade(): string
+    {
+        return $this->aptWait()
+            .' && export DEBIAN_FRONTEND=noninteractive && apt-get upgrade -y '
+            .'-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"';
     }
 
     protected function aptInstall(string ...$packages): string

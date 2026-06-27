@@ -107,6 +107,27 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('sysctl --system', $ran);
     }
 
+    public function test_it_upgrades_base_packages_before_installing(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Plain upgrade (not dist-upgrade) with the conf flags that keep an
+        // upgrade from stalling on a changed-config-file prompt.
+        $this->assertStringContainsString('apt-get upgrade -y', $ran);
+        $this->assertStringNotContainsString('dist-upgrade', $ran);
+        $this->assertMatchesRegularExpression('/apt-get upgrade -y.*--force-confold/', $ran);
+
+        // The upgrade runs after refreshing lists but before any package install.
+        $this->assertLessThan(
+            strpos($ran, 'apt-get install'),
+            strpos($ran, 'apt-get upgrade'),
+            'Base packages must be upgraded before installing the stack.',
+        );
+    }
+
     public function test_it_installs_the_expected_stack(): void
     {
         $connection = new FakeConnection();
