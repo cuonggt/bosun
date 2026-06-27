@@ -18,6 +18,7 @@ class Provisioner extends RemoteScript
         $php = $this->server->phpVersion;
         $user = $this->config['deploy_user'];
 
+        $this->task('Checking the operating system', $this->assertSupportedOs());
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
         $this->task('Installing base utilities', $this->aptInstall(
@@ -68,6 +69,24 @@ class Provisioner extends RemoteScript
     /* ----------------------------------------------------------------------
      | Package installation helpers
      | ---------------------------------------------------------------------- */
+
+    /**
+     * Abort immediately unless the server is Ubuntu 22.04 or 24.04. Like Forge,
+     * we validate before touching the system so an unsupported distro fails fast
+     * with a clear message instead of part-way through a broken install (every
+     * later step assumes apt, the ondrej PPA and these exact service names).
+     *
+     * /etc/os-release is shell-sourceable, so reading $ID/$VERSION_ID from it is
+     * cleaner and more reliable than scraping the file with awk.
+     */
+    protected function assertSupportedOs(): string
+    {
+        return '. /etc/os-release; '
+            .'if [ "$ID" != "ubuntu" ] || '
+            .'{ [ "$VERSION_ID" != "22.04" ] && [ "$VERSION_ID" != "24.04" ]; }; then '
+            .'echo "bosun only supports Ubuntu 22.04 and 24.04 (detected: ${PRETTY_NAME:-unknown})." >&2; '
+            .'exit 1; fi';
+    }
 
     protected function aptUpdate(): string
     {

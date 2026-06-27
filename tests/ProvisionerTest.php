@@ -37,6 +37,37 @@ class ProvisionerTest extends TestCase
         );
     }
 
+    public function test_it_checks_the_os_before_touching_packages(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        $this->assertStringContainsString('/etc/os-release', $ran);
+        $this->assertStringContainsString('Ubuntu 22.04 and 24.04', $ran);
+        $this->assertLessThan(
+            strpos($ran, 'apt-get'),
+            strpos($ran, '/etc/os-release'),
+            'The OS check must run before any apt command.',
+        );
+    }
+
+    public function test_it_aborts_on_an_unsupported_operating_system(): void
+    {
+        $connection = new FakeConnection();
+        // Make the OS check fail (e.g. Ubuntu 20.04 or a non-Ubuntu distro).
+        $connection->respondToCommandsContaining('/etc/os-release', 1);
+
+        try {
+            (new Provisioner($connection, $this->server(), $this->config()))->execute();
+            $this->fail('Provisioning should abort on an unsupported OS.');
+        } catch (\Cuonggt\Bosun\Ssh\RemoteTaskException $e) {
+            // Nothing should have been installed before the gate failed.
+            $this->assertStringNotContainsString('apt-get install', $connection->ranAll());
+        }
+    }
+
     public function test_it_installs_the_expected_stack(): void
     {
         $connection = new FakeConnection();
