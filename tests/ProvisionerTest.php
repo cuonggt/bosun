@@ -193,6 +193,50 @@ class ProvisionerTest extends TestCase
         }
     }
 
+    public function test_it_hardens_ssh_to_key_only_auth(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertArrayHasKey('/etc/ssh/sshd_config.d/49-bosun.conf', $connection->files);
+        $this->assertStringContainsString(
+            'PasswordAuthentication no',
+            $connection->files['/etc/ssh/sshd_config.d/49-bosun.conf'],
+        );
+
+        // Config is validated before the reload, so a bad file is never applied.
+        $this->assertStringContainsString('sshd -t && systemctl reload ssh', $connection->ranAll());
+    }
+
+    public function test_it_installs_and_enables_fail2ban(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+        $this->assertStringContainsString('fail2ban', $ran);
+        $this->assertStringContainsString('systemctl enable fail2ban', $ran);
+    }
+
+    public function test_it_enables_automatic_security_updates(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertStringContainsString('unattended-upgrades', $connection->ranAll());
+
+        $this->assertArrayHasKey('/etc/apt/apt.conf.d/20auto-upgrades', $connection->files);
+        $this->assertStringContainsString(
+            'APT::Periodic::Unattended-Upgrade "1";',
+            $connection->files['/etc/apt/apt.conf.d/20auto-upgrades'],
+        );
+
+        // The ${distro_id} tokens are expanded by unattended-upgrades at runtime,
+        // so they must reach the file literally (not be interpolated away).
+        $origins = $connection->files['/etc/apt/apt.conf.d/50unattended-upgrades'];
+        $this->assertStringContainsString('${distro_id}:${distro_codename}-security', $origins);
+    }
+
     public function test_it_creates_an_unprivileged_deploy_user(): void
     {
         $connection = new FakeConnection();

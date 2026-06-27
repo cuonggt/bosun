@@ -46,6 +46,13 @@ class Provisioner extends RemoteScript
         $this->task("Creating deploy user [{$user}]", fn () => $this->createDeployUser());
         $this->task('Granting service-control permissions', fn () => $this->configureSudoers());
         $this->task('Configuring the firewall', $this->configureFirewall());
+
+        // Hardening runs only after the deploy user exists and has inherited the
+        // SSH key, so disabling password auth can never lock anyone out.
+        $this->task('Installing security packages', $this->aptInstall('fail2ban', 'unattended-upgrades'));
+        $this->task('Hardening SSH access', fn () => $this->hardenSsh());
+        $this->task('Enabling automatic security updates', fn () => $this->configureUnattendedUpgrades());
+
         $this->task('Preparing the application directory', fn () => $this->prepareDeployPath());
 
         if ($this->server->database === 'mysql') {
@@ -319,6 +326,58 @@ class Provisioner extends RemoteScript
         ]);
     }
 
+    /**
+     * Turn off SSH password authentication, leaving only key-based login. By
+     * this point the deploy user has inherited the key that connected as root,
+     * so this closes the password brute-force vector without risking lockout.
+     *
+     * Written as a drop-in under sshd_config.d (Include-d by default on Ubuntu
+     * 22.04+) so the distro's sshd_config stays pristine. The config is tested
+     * with `sshd -t` before reload — a broken sshd_config must never be applied
+     * — and reload (not restart) keeps the current provisioning session alive.
+     */
+    protected function hardenSsh(): void
+    {
+        $this->exec('mkdir -p /etc/ssh/sshd_config.d');
+
+        $this->connection->put(
+            '/etc/ssh/sshd_config.d/49-bosun.conf',
+            "# Managed by bosun.\nPasswordAuthentication no\n"
+        );
+
+        $this->exec('sshd -t && systemctl reload ssh');
+    }
+
+    /**
+     * Apply security updates automatically via unattended-upgrades. The two
+     * files mirror Forge's setup: allow the distro's -security pocket, and turn
+     * on the periodic timer that actually runs the upgrades.
+     *
+     * Note the literal ${distro_id}/${distro_codename} tokens — unattended-
+     * upgrades expands those itself at runtime. Forge writes this through an
+     * unquoted shell heredoc, where the shell expands them to *empty* first;
+     * bosun writes the file directly, so the tokens survive intact.
+     */
+    protected function configureUnattendedUpgrades(): void
+    {
+        $this->connection->put('/etc/apt/apt.conf.d/50unattended-upgrades', implode("\n", [
+            'Unattended-Upgrade::Allowed-Origins {',
+            '    "${distro_id}:${distro_codename}-security";',
+            '};',
+            'Unattended-Upgrade::Package-Blacklist {',
+            '};',
+            '',
+        ]));
+
+        $this->connection->put('/etc/apt/apt.conf.d/20auto-upgrades', implode("\n", [
+            'APT::Periodic::Update-Package-Lists "1";',
+            'APT::Periodic::Download-Upgradeable-Packages "1";',
+            'APT::Periodic::AutocleanInterval "7";',
+            'APT::Periodic::Unattended-Upgrade "1";',
+            '',
+        ]));
+    }
+
     protected function prepareDeployPath(): void
     {
         $user = $this->config['deploy_user'];
@@ -412,6 +471,9 @@ class Provisioner extends RemoteScript
             'systemctl enable redis-server',
             'systemctl enable supervisor',
             'systemctl restart supervisor',
+            // fail2ban's default jail bans repeated SSH auth failures.
+            'systemctl enable fail2ban',
+            'systemctl restart fail2ban',
         ]);
     }
 
