@@ -19,6 +19,7 @@ class Provisioner extends RemoteScript
         $user = $this->config['deploy_user'];
 
         $this->task('Checking the operating system', $this->assertSupportedOs());
+        $this->task('Preferring IPv4 for reliable networking', $this->preferIpv4());
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
         $this->task('Installing base utilities', $this->aptInstall(
@@ -86,6 +87,23 @@ class Provisioner extends RemoteScript
             .'{ [ "$VERSION_ID" != "22.04" ] && [ "$VERSION_ID" != "24.04" ]; }; then '
             .'echo "bosun only supports Ubuntu 22.04 and 24.04 (detected: ${PRETTY_NAME:-unknown})." >&2; '
             .'exit 1; fi';
+    }
+
+    /**
+     * Make glibc prefer IPv4 over IPv6 in getaddrinfo()'s address selection.
+     * Many cloud images come up with an IPv6 address but no working IPv6 route;
+     * with IPv6 preferred, every network call (apt, composer, git, npm) tries it
+     * first and stalls until it times out before falling back to IPv4. Raising
+     * the precedence of IPv4-mapped addresses avoids those mystery hangs.
+     *
+     * Forge un-comments the example line in /etc/gai.conf, which silently does
+     * nothing if that exact line isn't present. We append the directive when no
+     * active one exists, so it works whatever state the file starts in.
+     */
+    protected function preferIpv4(): string
+    {
+        return 'grep -qE \'^precedence ::ffff:0:0/96\' /etc/gai.conf 2>/dev/null '
+            .'|| echo \'precedence ::ffff:0:0/96  100\' >> /etc/gai.conf';
     }
 
     protected function aptUpdate(): string

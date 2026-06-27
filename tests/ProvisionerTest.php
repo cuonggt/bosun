@@ -68,6 +68,25 @@ class ProvisionerTest extends TestCase
         }
     }
 
+    public function test_it_prefers_ipv4_before_any_network_step(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Raises IPv4 precedence in gai.conf, appended only if not already set.
+        $this->assertStringContainsString('precedence ::ffff:0:0/96  100', $ran);
+        $this->assertStringContainsString('/etc/gai.conf', $ran);
+
+        // Must precede apt (its purpose is to keep network steps from stalling).
+        $this->assertLessThan(
+            strpos($ran, 'apt-get'),
+            strpos($ran, '/etc/gai.conf'),
+            'IPv4 preference must be set before any apt command.',
+        );
+    }
+
     public function test_it_installs_the_expected_stack(): void
     {
         $connection = new FakeConnection();
