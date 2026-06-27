@@ -211,8 +211,9 @@ class ProvisionerTest extends TestCase
             $connection->files['/etc/ssh/sshd_config.d/49-bosun.conf'],
         );
 
-        // Config is validated before the reload, so a bad file is never applied.
-        $this->assertStringContainsString('sshd -t && systemctl reload ssh', $connection->ranAll());
+        // Missing host keys are generated, then the config is validated before
+        // the reload, so a bad file is never applied.
+        $this->assertStringContainsString('ssh-keygen -A && sshd -t && systemctl reload ssh', $connection->ranAll());
     }
 
     public function test_it_installs_and_enables_fail2ban(): void

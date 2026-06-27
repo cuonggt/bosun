@@ -387,9 +387,10 @@ class Provisioner extends RemoteScript
      * so this closes the password brute-force vector without risking lockout.
      *
      * Written as a drop-in under sshd_config.d (Include-d by default on Ubuntu
-     * 22.04+) so the distro's sshd_config stays pristine. The config is tested
-     * with `sshd -t` before reload — a broken sshd_config must never be applied
-     * — and reload (not restart) keeps the current provisioning session alive.
+     * 22.04+) so the distro's sshd_config stays pristine. As Forge does, any
+     * missing host keys are generated first (`ssh-keygen -A`); then the config
+     * is tested with `sshd -t` before reload — a broken sshd_config must never
+     * be applied — and reload (not restart) keeps the current session alive.
      */
     protected function hardenSsh(): void
     {
@@ -400,7 +401,7 @@ class Provisioner extends RemoteScript
             "# Managed by bosun.\nPasswordAuthentication no\n"
         );
 
-        $this->exec('sshd -t && systemctl reload ssh');
+        $this->exec('ssh-keygen -A && sshd -t && systemctl reload ssh');
     }
 
     /**
