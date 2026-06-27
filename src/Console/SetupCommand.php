@@ -35,7 +35,7 @@ class SetupCommand extends RemoteCommand
 
         $this->components->info("Provisioning <options=bold>{$server->host}</> as {$server->username}");
         $this->line("  PHP {$server->phpVersion} · Node {$server->nodeVersion} · ".
-            "{$server->database} · deploy user <options=bold>{$config['deploy_user']}</>");
+            "deploy user <options=bold>{$config['deploy_user']}</>");
         $this->newLine();
 
         $status = $this->runScript(new Provisioner(
@@ -45,33 +45,12 @@ class SetupCommand extends RemoteCommand
         ));
 
         if ($status === Command::SUCCESS) {
-            if ($server->database === 'mysql') {
-                $this->printDatabaseCredentials($config);
-            }
-
             $this->newLine();
             $this->components->info("{$server->host} is provisioned and ready.");
             $this->line("  Next: <options=bold>php artisan deploy {$server->name}</>");
         }
 
         return $status;
-    }
-
-    /**
-     * Show the database credentials provisioning created. They're also recorded
-     * on the server and written into shared/.env on the first deploy, but the
-     * generated password is shown here once so the operator can store it.
-     *
-     * @param  array<string, mixed>  $config
-     */
-    protected function printDatabaseCredentials(array $config): void
-    {
-        $this->newLine();
-        $this->components->info('MySQL database created. These are written to shared/.env on your first deploy:');
-        $this->line("  <fg=gray>DB_DATABASE</> {$config['database_name']}");
-        $this->line("  <fg=gray>DB_USERNAME</> {$config['database_user']}");
-        $this->line("  <fg=gray>DB_PASSWORD</> {$config['database_password']}");
-        $this->line('  <fg=yellow>Save the password now — it is not shown again.</>');
     }
 
     /**

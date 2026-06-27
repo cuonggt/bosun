@@ -6,8 +6,11 @@ use Cuonggt\Bosun\RemoteScript;
 
 /**
  * Provisions a fresh Ubuntu server (22.04 / 24.04) with everything a Laravel
- * application needs: PHP-FPM, Nginx, Composer, Node, a database, Redis,
- * Supervisor, Certbot, a firewall and an unprivileged deploy user.
+ * application needs: PHP-FPM, Nginx, Composer, Node, Redis, Supervisor,
+ * Certbot, a firewall and an unprivileged deploy user.
+ *
+ * Databases are intentionally out of scope — point the app at a managed or
+ * external database via shared/.env yourself.
  *
  * Connects as root. Every step is idempotent, so re-running `setup` is safe.
  */
@@ -45,14 +48,6 @@ class Provisioner extends RemoteScript
         $this->task('Installing Nginx', $this->aptInstall('nginx'));
         $this->task('Tuning Nginx', fn () => $this->tuneNginx());
 
-        if ($this->server->database === 'mysql') {
-            $this->task('Installing MySQL', $this->installMysql());
-            $this->task('Creating the application database', $this->bootstrapMysql());
-            $this->task('Tuning MySQL', $this->tuneMysql());
-        } elseif ($db = $this->databasePackages()) {
-            $this->task('Installing the database server', $this->aptInstall(...$db));
-        }
-
         $this->task('Installing Redis', $this->aptInstall('redis-server'));
         $this->task('Installing Supervisor', $this->aptInstall('supervisor'));
         $this->task("Installing Node.js {$this->server->nodeVersion}", $this->installNode());
@@ -69,10 +64,6 @@ class Provisioner extends RemoteScript
         $this->task('Enabling automatic security updates', fn () => $this->configureUnattendedUpgrades());
 
         $this->task('Preparing the application directory', fn () => $this->prepareDeployPath());
-
-        if ($this->server->database === 'mysql') {
-            $this->task('Recording database credentials for deploys', fn () => $this->storeDatabaseCredentials());
-        }
         $this->task('Configuring the Nginx site', fn () => $this->configureNginx());
         $this->task('Configuring the queue worker', fn () => $this->configureSupervisor());
         $this->task('Enabling and restarting services', $this->restartServices());
@@ -312,106 +303,6 @@ class Provisioner extends RemoteScript
         ]));
     }
 
-    /**
-     * @return array<int, string>
-     */
-    protected function databasePackages(): array
-    {
-        return match ($this->server->database) {
-            'pgsql', 'postgres', 'postgresql' => ['postgresql', 'postgresql-contrib'],
-            default => [],
-        };
-    }
-
-    /**
-     * Install MySQL the way Forge does: preseed the root password through
-     * debconf so the package configures non-interactively. Without this the
-     * postinst blocks on a password prompt that can't be answered over SSH,
-     * leaving dpkg half-configured and failing every later apt step with a
-     * "Sub-process /usr/bin/dpkg returned an error code (1)" followup error.
-     */
-    protected function installMysql(): string
-    {
-        $password = $this->config['database_root_password'];
-
-        // Preseed the answers, then install. Both the Oracle
-        // (mysql-community-server) and Debian (mysql-server) debconf keys are
-        // set so the same recipe works regardless of which package provides it.
-        // Half-configured state from an interrupted run is already recovered by
-        // aptUpdate()'s `dpkg --configure -a` earlier in the same provision.
-        $selections = implode("\n", [
-            "mysql-community-server mysql-community-server/root-pass password {$password}",
-            "mysql-community-server mysql-community-server/re-root-pass password {$password}",
-            "mysql-server mysql-server/root_password password {$password}",
-            "mysql-server mysql-server/root_password_again password {$password}",
-        ])."\n";
-
-        return implode(' && ', [
-            'export DEBIAN_FRONTEND=noninteractive',
-            sprintf('printf %s | debconf-set-selections', escapeshellarg($selections)),
-            'apt-get install -y mysql-server',
-        ]);
-    }
-
-    /**
-     * Create the application database and a user that owns it — the rest of
-     * Forge's MySQL bootstrap. The user is reachable from any host ('%') so the
-     * app can connect over TCP.
-     *
-     * Runs as root over the local socket (auth_socket on a stock Ubuntu
-     * install, so no password is needed). Every statement is idempotent: the
-     * database and user are only created if missing — notably the user's
-     * password is set just once, at creation, so re-provisioning never rotates
-     * it out from under a running application.
-     */
-    protected function bootstrapMysql(): string
-    {
-        $name = $this->config['database_name'];
-        $user = $this->config['database_user'];
-        $password = $this->config['database_password'];
-
-        $sql = implode(' ', [
-            "CREATE DATABASE IF NOT EXISTS `{$name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;",
-            "CREATE USER IF NOT EXISTS '{$user}'@'%' IDENTIFIED BY '{$password}';",
-            "GRANT ALL PRIVILEGES ON `{$name}`.* TO '{$user}'@'%';",
-            'FLUSH PRIVILEGES;',
-        ]);
-
-        return sprintf('mysql --no-defaults -e %s', escapeshellarg($sql));
-    }
-
-    /**
-     * Apply the portable slice of Forge's MySQL tuning via a conf.d drop-in:
-     *
-     *  - max_connections scaled to memory (~70 per GB, floor 150). MySQL's
-     *    default of 151 is fine on a small box but leaves a larger one starved,
-     *    so the value is computed from /proc/meminfo on the server.
-     *  - default_password_lifetime = 0 so the application's database password
-     *    never expires and silently breaks logins months later.
-     *
-     * Deliberately NOT ported from Forge: `bind-address = *`. Forge opens MySQL
-     * on every interface because its control panel manages per-IP firewall
-     * allowlisting for remote database tools. bosun has no such layer and the
-     * firewall never opens 3306, so the stock localhost binding is the safer
-     * default — the app reaches MySQL over 127.0.0.1 regardless.
-     */
-    protected function tuneMysql(): string
-    {
-        $conf = '/etc/mysql/mysql.conf.d/bosun.cnf';
-
-        // A conf.d drop-in (overwritten each run) keeps tuning idempotent and
-        // out of the package's own files. RAM is read on the server, so the
-        // computation has to happen in the shell rather than in PHP.
-        return implode('; ', [
-            'RAM=$(awk \'/^MemTotal:/{printf "%d", $2/1024/1024}\' /proc/meminfo)',
-            'MAX=$((RAM*70))',
-            '[ "$MAX" -lt 150 ] && MAX=150',
-            'true',
-        ])
-        .' && printf \'[mysqld]\nmax_connections = %s\ndefault_password_lifetime = 0\n\' "$MAX" > '.$conf
-        .' && systemctl enable mysql && systemctl restart mysql';
-    }
-
     protected function installNode(): string
     {
         $version = $this->server->nodeVersion;
@@ -552,33 +443,6 @@ class Provisioner extends RemoteScript
             // Owned by the deploy user, group www-data so Nginx can read it.
             "chown -R {$user}:www-data {$path}",
             "chmod -R 2755 {$path}",
-        ]);
-    }
-
-    /**
-     * Record the application database credentials on the server so the deploy
-     * can write them into shared/.env. Kept out of any release, owned by the
-     * deploy user and locked to 0600 since it holds the database password.
-     */
-    protected function storeDatabaseCredentials(): void
-    {
-        $user = $this->config['deploy_user'];
-        $file = $this->databaseCredentialsPath();
-
-        $env = implode("\n", [
-            'DB_CONNECTION=mysql',
-            'DB_HOST=127.0.0.1',
-            'DB_PORT=3306',
-            "DB_DATABASE={$this->config['database_name']}",
-            "DB_USERNAME={$this->config['database_user']}",
-            "DB_PASSWORD={$this->config['database_password']}",
-        ])."\n";
-
-        $this->connection->put($file, $env);
-
-        $this->execChain([
-            "chown {$user}:{$user} {$file}",
-            "chmod 600 {$file}",
         ]);
     }
 

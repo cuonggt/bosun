@@ -19,7 +19,6 @@ class Server
         public readonly ?string $password = null,
         public readonly string $phpVersion = '8.3',
         public readonly string $nodeVersion = '20',
-        public readonly string $database = 'mysql',
     ) {
     }
 
@@ -45,7 +44,6 @@ class Server
             password: $config['password'] ?? null,
             phpVersion: (string) ($config['php'] ?? '8.3'),
             nodeVersion: (string) ($config['node'] ?? '20'),
-            database: $config['database'] ?? 'mysql',
         );
     }
 
@@ -66,7 +64,6 @@ class Server
             password: $this->password,
             phpVersion: $this->phpVersion,
             nodeVersion: $this->nodeVersion,
-            database: $this->database,
         );
     }
 }

@@ -8,7 +8,7 @@ This package gives you two commands:
 
 | Command | What it does |
 | --- | --- |
-| `php artisan setup` | Provisions a fresh Ubuntu server: PHP-FPM, Nginx, Composer, Node, a database, Redis, Supervisor, Certbot, a firewall and a non-root deploy user. |
+| `php artisan setup` | Provisions a fresh Ubuntu server: PHP-FPM, Nginx, Composer, Node, Redis, Supervisor, Certbot, a firewall and a non-root deploy user. |
 | `php artisan deploy` | Deploys your app with zero downtime using timestamped releases, shared `.env`/`storage`, atomic symlink swaps and automatic rollback-ready release pruning. |
 
 It talks to your servers over SSH using [phpseclib](https://phpseclib.com/) — there's no dependency on a local `ssh` binary, and the whole thing is unit-tested against a fake connection.
@@ -58,7 +58,7 @@ Each server is an entry under `servers` in the config file, so you can define `p
 | `key` / `passphrase` / `password` | Auth. A readable key file wins; otherwise the password is used. | `~/.ssh/id_rsa` |
 | `domain` | Server name for the generated Nginx site. | — |
 | `deploy_path` | Where the app lives on the server. `{application}` is substituted. | `/home/deployer/{application}` |
-| `php` / `node` / `database` | Stack to provision. `database` is `mysql`, `pgsql` or `none`. | `8.3` / `20` / `mysql` |
+| `php` / `node` | Stack to provision. | `8.3` / `20` |
 
 App-wide options (outside `servers`): `repository`, `branch`, `shared_files`, `shared_dirs`, `keep_releases`, `build_assets`, `queue`, and `hooks`.
 
@@ -73,13 +73,15 @@ php artisan setup production
 By default it connects as `root` (override with `--user`). It will:
 
 1. Update apt and install base utilities.
-2. Install PHP (with the common Laravel extensions), Composer, Nginx, your database, Redis, Supervisor, Node and Certbot.
+2. Install PHP (with the common Laravel extensions, including the MySQL/Postgres PDO drivers), Composer, Nginx, Redis, Supervisor, Node and Certbot.
 3. Create the unprivileged **deploy user**, authorizing the same SSH key you connected with (add another with `--key`).
 4. Grant that user *passwordless* permission to reload PHP-FPM/Nginx and control Supervisor — nothing more.
 5. Configure the firewall (UFW: SSH + HTTP/HTTPS).
 6. Lay out the deploy directory, write the Nginx site and the Supervisor queue worker, then start everything.
 
 Every step is **idempotent**, so re-running `setup` to add an extension or change a setting is safe.
+
+> **Databases are out of scope.** bosun installs the MySQL/Postgres PDO drivers but does not provision a database server. Point your app at a managed or external database by setting `DB_*` in the server's `shared/.env`.
 
 ```bash
 php artisan setup production --user=root --key=~/.ssh/deploy_key.pub
