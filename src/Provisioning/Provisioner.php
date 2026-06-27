@@ -62,6 +62,7 @@ class Provisioner extends RemoteScript
         $this->task('Installing security packages', $this->aptInstall('fail2ban', 'unattended-upgrades'));
         $this->task('Hardening SSH access', fn () => $this->hardenSsh());
         $this->task('Enabling automatic security updates', fn () => $this->configureUnattendedUpgrades());
+        $this->task('Configuring log rotation', fn () => $this->configureLogRotation());
 
         $this->task('Preparing the application directory', fn () => $this->prepareDeployPath());
         $this->task('Configuring the Nginx site', fn () => $this->configureNginx());
@@ -74,10 +75,10 @@ class Provisioner extends RemoteScript
      | ---------------------------------------------------------------------- */
 
     /**
-     * Abort immediately unless the server is Ubuntu 22.04 or 24.04. Like Forge,
-     * we validate before touching the system so an unsupported distro fails fast
-     * with a clear message instead of part-way through a broken install (every
-     * later step assumes apt, the ondrej PPA and these exact service names).
+     * Abort immediately unless the server is Ubuntu 22.04 or 24.04. Validating
+     * before touching the system means an unsupported distro fails fast with a
+     * clear message instead of part-way through a broken install (every later
+     * step assumes apt, the ondrej PPA and these exact service names).
      *
      * /etc/os-release is shell-sourceable, so reading $ID/$VERSION_ID from it is
      * cleaner and more reliable than scraping the file with awk.
@@ -98,9 +99,8 @@ class Provisioner extends RemoteScript
      * first and stalls until it times out before falling back to IPv4. Raising
      * the precedence of IPv4-mapped addresses avoids those mystery hangs.
      *
-     * Forge un-comments the example line in /etc/gai.conf, which silently does
-     * nothing if that exact line isn't present. We append the directive when no
-     * active one exists, so it works whatever state the file starts in.
+     * The directive is appended only when no active one already exists, so it's
+     * idempotent and works whatever state /etc/gai.conf starts in.
      */
     protected function preferIpv4(): string
     {
@@ -110,15 +110,14 @@ class Provisioner extends RemoteScript
 
     /**
      * Give a memory-constrained box a 1G swapfile so a heavy composer/npm step
-     * can't OOM mid-provision or mid-deploy, plus the VM tuning Forge pairs with
-     * it (swappiness 30, vfs_cache_pressure 50).
+     * can't OOM mid-provision or mid-deploy, plus matching VM tuning (swappiness
+     * 30, vfs_cache_pressure 50).
      *
-     * Only created when the server has no swap at all — a swapfile or a swap
-     * partition the provider may already have set up — which is a touch smarter
-     * than Forge's "does /swapfile exist" check. fallocate is fastest, with a dd
-     * fallback for filesystems where a fallocate'd file isn't valid swap; the
-     * fstab entry survives reboots. The sysctl settings go in a sysctl.d drop-in
-     * (overwritten each run) rather than appended to sysctl.conf.
+     * Only created when the server has no swap at all — neither a swapfile nor a
+     * swap partition the provider may already have set up. fallocate is fastest,
+     * with a dd fallback for filesystems where a fallocate'd file isn't valid
+     * swap; the fstab entry survives reboots. The sysctl settings go in a
+     * sysctl.d drop-in (overwritten each run) rather than appended to sysctl.conf.
      */
     protected function configureSwap(): void
     {
@@ -162,7 +161,7 @@ class Provisioner extends RemoteScript
      *
      * The conf flags matter most here: an upgrade is exactly when dpkg meets a
      * changed config file and would otherwise stop on a "keep or replace?"
-     * prompt. (Forge runs the upgrade without them — arguably a gap.)
+     * prompt.
      */
     protected function aptUpgrade(): string
     {
@@ -242,10 +241,10 @@ class Provisioner extends RemoteScript
 
     /**
      * Apply Laravel-friendly PHP defaults to both the FPM and CLI SAPIs. Written
-     * as a conf.d drop-in (loaded after the stock php.ini) rather than sed-ing
-     * php.ini in place the way Forge does — the drop-in is idempotent and leaves
-     * the distro's file untouched. The settings are applied by the php-fpm
-     * restart in restartServices().
+     * as a conf.d drop-in (loaded after the stock php.ini) rather than editing
+     * php.ini in place — the drop-in is idempotent and leaves the distro's file
+     * untouched. The settings are applied by the php-fpm restart in
+     * restartServices().
      *
      *  - memory_limit 512M: Composer and artisan are memory-hungry.
      *  - cgi.fix_pathinfo=0: stops PHP guessing a script when the exact path
@@ -279,11 +278,9 @@ class Provisioner extends RemoteScript
      * itself is rendered separately in configureNginx(); this file only carries
      * server-wide defaults, and configureNginx()'s `nginx -t` validates both.
      *
-     * Deliberately NOT ported: Forge rewrites nginx.conf's `user` to the deploy
-     * user (and does the same for the FPM pool) so everything runs as one
-     * account. bosun keeps the stock www-data user and instead puts the deploy
-     * user in the www-data group — a different, equally valid ownership model,
-     * and changing it here would fight the rest of the provisioner.
+     * Deliberately left alone: nginx.conf's worker `user`. bosun keeps the stock
+     * www-data user and instead puts the deploy user in the www-data group, so
+     * rewriting it here would fight the rest of the provisioner.
      */
     protected function tuneNginx(): void
     {
@@ -390,10 +387,10 @@ class Provisioner extends RemoteScript
      * so this closes the password brute-force vector without risking lockout.
      *
      * Written as a drop-in under sshd_config.d (Include-d by default on Ubuntu
-     * 22.04+) so the distro's sshd_config stays pristine. As Forge does, any
-     * missing host keys are generated first (`ssh-keygen -A`); then the config
-     * is tested with `sshd -t` before reload — a broken sshd_config must never
-     * be applied — and reload (not restart) keeps the current session alive.
+     * 22.04+) so the distro's sshd_config stays pristine. Any missing host keys
+     * are generated first (`ssh-keygen -A`); then the config is tested with
+     * `sshd -t` before reload — a broken sshd_config must never be applied — and
+     * reload (not restart) keeps the current session alive.
      */
     protected function hardenSsh(): void
     {
@@ -409,13 +406,13 @@ class Provisioner extends RemoteScript
 
     /**
      * Apply security updates automatically via unattended-upgrades. The two
-     * files mirror Forge's setup: allow the distro's -security pocket, and turn
-     * on the periodic timer that actually runs the upgrades.
+     * files allow the distro's -security pocket and turn on the periodic timer
+     * that actually runs the upgrades.
      *
      * Note the literal ${distro_id}/${distro_codename} tokens — unattended-
-     * upgrades expands those itself at runtime. Forge writes this through an
-     * unquoted shell heredoc, where the shell expands them to *empty* first;
-     * bosun writes the file directly, so the tokens survive intact.
+     * upgrades expands those itself at runtime. They must reach the file intact,
+     * which writing it directly (rather than through a shell heredoc, which
+     * would expand them to *empty* first) guarantees.
      */
     protected function configureUnattendedUpgrades(): void
     {
@@ -435,6 +432,46 @@ class Provisioner extends RemoteScript
             'APT::Periodic::Unattended-Upgrade "1";',
             '',
         ]));
+    }
+
+    /**
+     * Stop a runaway log from filling the disk between rotations. Two parts that
+     * only work together: cap the high-volume logs at 100M (`maxsize`), and run
+     * logrotate every 5 minutes (stock is daily) so that cap is actually checked
+     * often enough to matter.
+     *
+     * The size cap is added idempotently to the logs our stack produces, and any
+     * config that isn't present on this box is skipped. The 5-minute schedule is
+     * a timer drop-in that resets OnCalendar, leaving the stock unit untouched.
+     */
+    protected function configureLogRotation(): void
+    {
+        $php = $this->server->phpVersion;
+
+        $commands = [];
+        foreach (['nginx', "php{$php}-fpm", 'fail2ban', 'ufw'] as $name) {
+            $path = "/etc/logrotate.d/{$name}";
+
+            // Replace an existing maxsize, else insert one after the rotation
+            // interval line (preserving its indentation). Guarded on existence.
+            $commands[] = '[ -f '.$path.' ] && { '
+                .'grep -q maxsize '.$path.' '
+                .'&& sed -i -E \'s/^([[:space:]]*)maxsize.*/\1maxsize 100M/\' '.$path.' '
+                .'|| sed -i -E \'s/^([[:space:]]*)(daily|weekly|monthly|yearly)$/\1\2\n\1maxsize 100M/\' '.$path.'; '
+                .'} || true';
+        }
+        $this->execChain($commands);
+
+        $this->exec('mkdir -p /etc/systemd/system/logrotate.timer.d');
+        $this->connection->put('/etc/systemd/system/logrotate.timer.d/override.conf', implode("\n", [
+            '[Timer]',
+            // Reset the stock daily schedule, then run every 5 minutes.
+            'OnCalendar=',
+            'OnCalendar=*:0/5',
+            '',
+        ]));
+
+        $this->exec('systemctl daemon-reload && systemctl restart logrotate.timer');
     }
 
     protected function prepareDeployPath(): void

@@ -137,7 +137,7 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('jq', $ran);
         $this->assertMatchesRegularExpression('/\bcron\b/', $ran);
 
-        // Forge's bloat we deliberately leave out.
+        // Bloat we deliberately leave out.
         $this->assertStringNotContainsString('sendmail', $ran);
         $this->assertStringNotContainsString('libmcrypt4', $ran);
     }
@@ -286,6 +286,24 @@ class ProvisionerTest extends TestCase
         $ran = $connection->ranAll();
         $this->assertStringContainsString("id -u deployer >/dev/null 2>&1 || adduser", $ran);
         $this->assertStringContainsString('usermod -aG sudo,www-data deployer', $ran);
+    }
+
+    public function test_it_caps_log_sizes_and_runs_logrotate_frequently(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // 100M cap applied to the logs our stack produces (existence-guarded).
+        $this->assertStringContainsString('maxsize 100M', $ran);
+        $this->assertStringContainsString('[ -f /etc/logrotate.d/nginx ]', $ran);
+        $this->assertStringContainsString('[ -f /etc/logrotate.d/php8.3-fpm ]', $ran);
+
+        // logrotate runs every 5 minutes (stock is daily) via a timer drop-in.
+        $override = $connection->files['/etc/systemd/system/logrotate.timer.d/override.conf'];
+        $this->assertStringContainsString('OnCalendar=*:0/5', $override);
+        $this->assertStringContainsString('systemctl restart logrotate.timer', $ran);
     }
 
     public function test_it_writes_an_nginx_site_for_the_domain(): void
