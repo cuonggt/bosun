@@ -237,6 +237,35 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('${distro_id}:${distro_codename}-security', $origins);
     }
 
+    public function test_it_tunes_php_for_fpm_and_cli(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        foreach (['fpm', 'cli'] as $sapi) {
+            $path = "/etc/php/8.3/{$sapi}/conf.d/99-bosun.ini";
+            $this->assertArrayHasKey($path, $connection->files);
+            $this->assertStringContainsString('memory_limit = 512M', $connection->files[$path]);
+            // RCE hardening — PHP must not guess a script for a missing path.
+            $this->assertStringContainsString('cgi.fix_pathinfo = 0', $connection->files[$path]);
+        }
+    }
+
+    public function test_it_tunes_nginx_with_an_http_dropin(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertArrayHasKey('/etc/nginx/conf.d/bosun.conf', $connection->files);
+
+        $conf = $connection->files['/etc/nginx/conf.d/bosun.conf'];
+        $this->assertStringContainsString('gzip on;', $conf);
+        $this->assertStringContainsString('client_max_body_size 64m;', $conf);
+
+        // We keep the stock www-data worker user, so the tuning never rewrites it.
+        $this->assertStringNotContainsString('user ', $conf);
+    }
+
     public function test_it_creates_an_unprivileged_deploy_user(): void
     {
         $connection = new FakeConnection();

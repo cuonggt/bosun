@@ -26,9 +26,11 @@ class Provisioner extends RemoteScript
 
         $this->task('Adding the PHP repository (ondrej/php)', $this->phpRepository());
         $this->task("Installing PHP {$php} and extensions", $this->aptInstall(...$this->phpPackages($php)));
+        $this->task("Tuning PHP {$php}", fn () => $this->tunePhp());
         $this->task('Installing Composer', $this->installComposer());
 
         $this->task('Installing Nginx', $this->aptInstall('nginx'));
+        $this->task('Tuning Nginx', fn () => $this->tuneNginx());
 
         if ($this->server->database === 'mysql') {
             $this->task('Installing MySQL', $this->installMysql());
@@ -146,6 +148,69 @@ class Provisioner extends RemoteScript
                 .'--install-dir=/usr/local/bin --filename=composer; fi',
             'composer self-update --no-interaction 2>/dev/null || true',
         ]);
+    }
+
+    /**
+     * Apply Laravel-friendly PHP defaults to both the FPM and CLI SAPIs. Written
+     * as a conf.d drop-in (loaded after the stock php.ini) rather than sed-ing
+     * php.ini in place the way Forge does — the drop-in is idempotent and leaves
+     * the distro's file untouched. The settings are applied by the php-fpm
+     * restart in restartServices().
+     *
+     *  - memory_limit 512M: Composer and artisan are memory-hungry.
+     *  - cgi.fix_pathinfo=0: stops PHP guessing a script when the exact path
+     *    doesn't exist — a long-standing remote-code-execution hardening.
+     *  - upload/post sizes raised together, matched by Nginx client_max_body_size.
+     *  - date.timezone set so PHP stops emitting warnings.
+     */
+    protected function tunePhp(): void
+    {
+        $php = $this->server->phpVersion;
+
+        $ini = implode("\n", [
+            '; Managed by bosun.',
+            'memory_limit = 512M',
+            'cgi.fix_pathinfo = 0',
+            'upload_max_filesize = 64M',
+            'post_max_size = 64M',
+            'date.timezone = UTC',
+            '',
+        ]);
+
+        // CLI gets the same baseline so artisan/composer behave like FPM.
+        foreach (['fpm', 'cli'] as $sapi) {
+            $this->connection->put("/etc/php/{$php}/{$sapi}/conf.d/99-bosun.ini", $ini);
+        }
+    }
+
+    /**
+     * Global Nginx tuning via an http-context drop-in: gzip for text responses
+     * and a body-size limit matched to PHP's upload limit. The site server block
+     * itself is rendered separately in configureNginx(); this file only carries
+     * server-wide defaults, and configureNginx()'s `nginx -t` validates both.
+     *
+     * Deliberately NOT ported: Forge rewrites nginx.conf's `user` to the deploy
+     * user (and does the same for the FPM pool) so everything runs as one
+     * account. bosun keeps the stock www-data user and instead puts the deploy
+     * user in the www-data group — a different, equally valid ownership model,
+     * and changing it here would fight the rest of the provisioner.
+     */
+    protected function tuneNginx(): void
+    {
+        $this->connection->put('/etc/nginx/conf.d/bosun.conf', implode("\n", [
+            '# Managed by bosun.',
+            'server_names_hash_bucket_size 128;',
+            'client_max_body_size 64m;',
+            '',
+            'gzip on;',
+            'gzip_comp_level 5;',
+            'gzip_min_length 256;',
+            'gzip_proxied any;',
+            'gzip_vary on;',
+            'gzip_types application/json application/javascript application/xml '
+                .'application/rss+xml text/css text/plain image/svg+xml;',
+            '',
+        ]));
     }
 
     /**
