@@ -1,0 +1,13 @@
+[program:{{ app }}-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php {{ deploy_path }}/current/artisan queue:work {{ connection }} --sleep=3 --tries=3 --max-time=3600 --backoff=5
+directory={{ deploy_path }}/current
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+user={{ user }}
+numprocs={{ processes }}
+redirect_stderr=true
+stdout_logfile=/var/log/{{ app }}-worker.log
+stopwaitsecs=3600

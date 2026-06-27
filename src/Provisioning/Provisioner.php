@@ -1,0 +1,267 @@
+<?php
+
+namespace Cuonggt\Bosun\Provisioning;
+
+use Cuonggt\Bosun\RemoteScript;
+
+/**
+ * Provisions a fresh Ubuntu server (22.04 / 24.04) with everything a Laravel
+ * application needs: PHP-FPM, Nginx, Composer, Node, a database, Redis,
+ * Supervisor, Certbot, a firewall and an unprivileged deploy user.
+ *
+ * Connects as root. Every step is idempotent, so re-running `setup` is safe.
+ */
+class Provisioner extends RemoteScript
+{
+    public function execute(): void
+    {
+        $php = $this->server->phpVersion;
+        $user = $this->config['deploy_user'];
+
+        $this->task('Updating package lists', $this->aptUpdate());
+        $this->task('Installing base utilities', $this->aptInstall(
+            'software-properties-common', 'curl', 'wget', 'git', 'unzip', 'zip', 'acl', 'ufw', 'gnupg', 'ca-certificates'
+        ));
+
+        $this->task('Adding the PHP repository (ondrej/php)', $this->phpRepository());
+        $this->task("Installing PHP {$php} and extensions", $this->aptInstall(...$this->phpPackages($php)));
+        $this->task('Installing Composer', $this->installComposer());
+
+        $this->task('Installing Nginx', $this->aptInstall('nginx'));
+
+        if ($db = $this->databasePackages()) {
+            $this->task('Installing the database server', $this->aptInstall(...$db));
+        }
+
+        $this->task('Installing Redis', $this->aptInstall('redis-server'));
+        $this->task('Installing Supervisor', $this->aptInstall('supervisor'));
+        $this->task("Installing Node.js {$this->server->nodeVersion}", $this->installNode());
+        $this->task('Installing Certbot (Let\'s Encrypt)', $this->aptInstall('certbot', 'python3-certbot-nginx'));
+
+        $this->task("Creating deploy user [{$user}]", fn () => $this->createDeployUser());
+        $this->task('Granting service-control permissions', fn () => $this->configureSudoers());
+        $this->task('Configuring the firewall', $this->configureFirewall());
+        $this->task('Preparing the application directory', fn () => $this->prepareDeployPath());
+        $this->task('Configuring the Nginx site', fn () => $this->configureNginx());
+        $this->task('Configuring the queue worker', fn () => $this->configureSupervisor());
+        $this->task('Enabling and restarting services', $this->restartServices());
+    }
+
+    /* ----------------------------------------------------------------------
+     | Package installation helpers
+     | ---------------------------------------------------------------------- */
+
+    protected function aptUpdate(): string
+    {
+        return 'export DEBIAN_FRONTEND=noninteractive && apt-get update -y';
+    }
+
+    protected function aptInstall(string ...$packages): string
+    {
+        return 'export DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends '
+            .implode(' ', $packages);
+    }
+
+    protected function phpRepository(): string
+    {
+        // ondrej/php provides current PHP versions on Ubuntu. add-apt-repository
+        // is idempotent, so this is safe to re-run.
+        return 'add-apt-repository -y ppa:ondrej/php && '.$this->aptUpdate();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function phpPackages(string $php): array
+    {
+        return array_map(
+            fn (string $ext) => $ext === '' ? "php{$php}" : "php{$php}-{$ext}",
+            ['', 'fpm', 'cli', 'common', 'mysql', 'pgsql', 'sqlite3', 'xml', 'curl', 'mbstring', 'zip', 'bcmath', 'gd', 'intl', 'redis', 'readline', 'gmp']
+        );
+    }
+
+    protected function installComposer(): string
+    {
+        return implode(' && ', [
+            'if ! command -v composer >/dev/null 2>&1; then '
+                .'curl -sS https://getcomposer.org/installer | php -- '
+                .'--install-dir=/usr/local/bin --filename=composer; fi',
+            'composer self-update --no-interaction 2>/dev/null || true',
+        ]);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function databasePackages(): array
+    {
+        return match ($this->server->database) {
+            'mysql' => ['mysql-server'],
+            'pgsql', 'postgres', 'postgresql' => ['postgresql', 'postgresql-contrib'],
+            default => [],
+        };
+    }
+
+    protected function installNode(): string
+    {
+        $version = $this->server->nodeVersion;
+
+        return 'if ! command -v node >/dev/null 2>&1; then '
+            ."curl -fsSL https://deb.nodesource.com/setup_{$version}.x | bash - && "
+            .$this->aptInstall('nodejs').'; fi';
+    }
+
+    /* ----------------------------------------------------------------------
+     | Server configuration helpers
+     | ---------------------------------------------------------------------- */
+
+    protected function createDeployUser(): void
+    {
+        $user = $this->config['deploy_user'];
+        $home = "/home/{$user}";
+
+        $this->execChain([
+            // Create the user only if it does not already exist.
+            "id -u {$user} >/dev/null 2>&1 || adduser --disabled-password --gecos '' {$user}",
+            "usermod -aG sudo,www-data {$user}",
+            "mkdir -p {$home}/.ssh",
+            "chmod 700 {$home}/.ssh",
+            // Reuse the key that connected as root so the deploy user is reachable.
+            "[ -f /root/.ssh/authorized_keys ] && cp -n /root/.ssh/authorized_keys {$home}/.ssh/authorized_keys || true",
+            "touch {$home}/.ssh/authorized_keys",
+            "chmod 600 {$home}/.ssh/authorized_keys",
+            "chown -R {$user}:{$user} {$home}/.ssh",
+        ]);
+
+        // Authorize an additional public key if one was provided.
+        if (! empty($this->config['authorized_key'])) {
+            $key = trim($this->config['authorized_key']);
+            $this->exec(sprintf(
+                'grep -qxF %s %s 2>/dev/null || echo %s >> %s',
+                escapeshellarg($key),
+                "{$home}/.ssh/authorized_keys",
+                escapeshellarg($key),
+                "{$home}/.ssh/authorized_keys",
+            ));
+        }
+    }
+
+    protected function configureSudoers(): void
+    {
+        $user = $this->config['deploy_user'];
+        $php = $this->server->phpVersion;
+
+        // Allow the deploy user to reload services after a deploy without a
+        // password, but nothing more.
+        $rules = implode(', ', [
+            "/usr/bin/systemctl reload php{$php}-fpm",
+            "/usr/bin/systemctl restart php{$php}-fpm",
+            '/usr/bin/systemctl reload nginx',
+            '/usr/bin/supervisorctl',
+        ]);
+
+        $path = "/etc/sudoers.d/{$user}-bosun";
+
+        $this->connection->put($path, "{$user} ALL=(ALL) NOPASSWD: {$rules}\n");
+
+        // Validate before trusting it — a malformed sudoers file is dangerous.
+        $this->execChain([
+            "chmod 440 {$path}",
+            "visudo -cf {$path}",
+        ]);
+    }
+
+    protected function configureFirewall(): string
+    {
+        return implode(' && ', [
+            'ufw allow OpenSSH',
+            "ufw allow 'Nginx Full'",
+            'ufw --force enable',
+        ]);
+    }
+
+    protected function prepareDeployPath(): void
+    {
+        $user = $this->config['deploy_user'];
+        $path = $this->config['deploy_path'];
+
+        $this->execChain([
+            "mkdir -p {$path}/releases {$path}/shared",
+            // Owned by the deploy user, group www-data so Nginx can read it.
+            "chown -R {$user}:www-data {$path}",
+            "chmod -R 2755 {$path}",
+        ]);
+    }
+
+    protected function configureNginx(): void
+    {
+        $app = $this->config['application'];
+        $domain = $this->config['domain'] ?: '_';
+        $root = rtrim($this->config['deploy_path'], '/').'/current/public';
+
+        $config = $this->renderStub('nginx.stub', [
+            'server_name' => $domain,
+            'root' => $root,
+            'php_version' => $this->server->phpVersion,
+        ]);
+
+        $this->connection->put("/etc/nginx/sites-available/{$app}", $config);
+
+        $this->execChain([
+            "ln -nfs /etc/nginx/sites-available/{$app} /etc/nginx/sites-enabled/{$app}",
+            'rm -f /etc/nginx/sites-enabled/default',
+            'nginx -t',
+        ]);
+    }
+
+    protected function configureSupervisor(): void
+    {
+        $app = $this->config['application'];
+        $connection = $this->config['queue_connection'];
+
+        $config = $this->renderStub('supervisor.stub', [
+            'app' => $app,
+            'deploy_path' => rtrim($this->config['deploy_path'], '/'),
+            'user' => $this->config['deploy_user'],
+            'processes' => (string) $this->config['queue_processes'],
+            'connection' => $connection,
+        ]);
+
+        $this->connection->put("/etc/supervisor/conf.d/{$app}-worker.conf", $config);
+
+        // reread/update may report an error until the first deploy creates
+        // "current"; that is expected and harmless, so don't fail on it.
+        $this->exec('supervisorctl reread; supervisorctl update; true');
+    }
+
+    protected function restartServices(): string
+    {
+        $php = $this->server->phpVersion;
+
+        return implode(' && ', [
+            'systemctl enable nginx',
+            'systemctl restart nginx',
+            "systemctl enable php{$php}-fpm",
+            "systemctl restart php{$php}-fpm",
+            'systemctl enable redis-server',
+            'systemctl enable supervisor',
+            'systemctl restart supervisor',
+        ]);
+    }
+
+    /**
+     * Render a stub file, replacing {{ token }} placeholders.
+     *
+     * @param  array<string, string>  $replacements
+     */
+    protected function renderStub(string $stub, array $replacements): string
+    {
+        $contents = file_get_contents(__DIR__.'/../../stubs/'.$stub);
+
+        foreach ($replacements as $key => $value) {
+            $contents = str_replace('{{ '.$key.' }}', $value, $contents);
+        }
+
+        return $contents;
+    }
+}
