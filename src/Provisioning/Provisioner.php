@@ -33,6 +33,7 @@ class Provisioner extends RemoteScript
         if ($this->server->database === 'mysql') {
             $this->task('Installing MySQL', $this->installMysql());
             $this->task('Creating the application database', $this->bootstrapMysql());
+            $this->task('Tuning MySQL', $this->tuneMysql());
         } elseif ($db = $this->databasePackages()) {
             $this->task('Installing the database server', $this->aptInstall(...$db));
         }
@@ -206,6 +207,38 @@ class Provisioner extends RemoteScript
         ]);
 
         return sprintf('mysql --no-defaults -e %s', escapeshellarg($sql));
+    }
+
+    /**
+     * Apply the portable slice of Forge's MySQL tuning via a conf.d drop-in:
+     *
+     *  - max_connections scaled to memory (~70 per GB, floor 150). MySQL's
+     *    default of 151 is fine on a small box but leaves a larger one starved,
+     *    so the value is computed from /proc/meminfo on the server.
+     *  - default_password_lifetime = 0 so the application's database password
+     *    never expires and silently breaks logins months later.
+     *
+     * Deliberately NOT ported from Forge: `bind-address = *`. Forge opens MySQL
+     * on every interface because its control panel manages per-IP firewall
+     * allowlisting for remote database tools. bosun has no such layer and the
+     * firewall never opens 3306, so the stock localhost binding is the safer
+     * default — the app reaches MySQL over 127.0.0.1 regardless.
+     */
+    protected function tuneMysql(): string
+    {
+        $conf = '/etc/mysql/mysql.conf.d/bosun.cnf';
+
+        // A conf.d drop-in (overwritten each run) keeps tuning idempotent and
+        // out of the package's own files. RAM is read on the server, so the
+        // computation has to happen in the shell rather than in PHP.
+        return implode('; ', [
+            'RAM=$(awk \'/^MemTotal:/{printf "%d", $2/1024/1024}\' /proc/meminfo)',
+            'MAX=$((RAM*70))',
+            '[ "$MAX" -lt 150 ] && MAX=150',
+            'true',
+        ])
+        .' && printf \'[mysqld]\nmax_connections = %s\ndefault_password_lifetime = 0\n\' "$MAX" > '.$conf
+        .' && systemctl enable mysql && systemctl restart mysql';
     }
 
     protected function installNode(): string

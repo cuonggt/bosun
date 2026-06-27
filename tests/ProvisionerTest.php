@@ -115,6 +115,35 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('GRANT ALL PRIVILEGES ON `app`.*', $ran);
     }
 
+    public function test_it_tunes_mysql_with_a_confd_dropin(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+
+        // Memory-scaled connection limit (floor 150) and no password expiry,
+        // written to a conf.d drop-in and applied with a restart.
+        $this->assertStringContainsString('/proc/meminfo', $ran);
+        $this->assertStringContainsString('max_connections', $ran);
+        $this->assertStringContainsString('default_password_lifetime = 0', $ran);
+        $this->assertStringContainsString('/etc/mysql/mysql.conf.d/bosun.cnf', $ran);
+        $this->assertStringContainsString('systemctl restart mysql', $ran);
+
+        // Deliberately localhost-only: bosun never exposes MySQL externally.
+        $this->assertStringNotContainsString('bind-address', $ran);
+    }
+
+    public function test_it_does_not_tune_mysql_for_other_engines(): void
+    {
+        foreach (['pgsql', 'none'] as $database) {
+            $connection = new FakeConnection();
+            (new Provisioner($connection, $this->server($database), $this->config()))->execute();
+
+            $this->assertStringNotContainsString('bosun.cnf', $connection->ranAll());
+        }
+    }
+
     public function test_it_does_not_bootstrap_a_database_for_other_engines(): void
     {
         foreach (['pgsql', 'none'] as $database) {
