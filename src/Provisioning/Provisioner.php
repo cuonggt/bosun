@@ -23,6 +23,7 @@ class Provisioner extends RemoteScript
 
         $this->task('Checking the operating system', $this->assertSupportedOs());
         $this->task('Preferring IPv4 for reliable networking', $this->preferIpv4());
+        $this->task('Setting the timezone to UTC', 'timedatectl set-timezone UTC');
         $this->task('Configuring swap', fn () => $this->configureSwap());
         $this->task('Preparing apt for unattended installs', $this->configureUnattendedApt());
         $this->task('Updating package lists', $this->aptUpdate());
@@ -39,6 +40,11 @@ class Provisioner extends RemoteScript
             // default/local DB, jq parses JSON in deploy hooks.
             'cron', 'sqlite3', 'jq'
         ));
+
+        // Lock SSH down to key-only auth early, before the rest of provisioning
+        // exposes more surface. Key auth (how we connected, and what the deploy
+        // user inherits) is unaffected; only password login is disabled.
+        $this->task('Hardening SSH access', fn () => $this->hardenSsh());
 
         $this->task('Adding the PHP repository (ondrej/php)', $this->phpRepository());
         $this->task("Installing PHP {$php} and extensions", $this->aptInstall(...$this->phpPackages($php)));
@@ -58,10 +64,7 @@ class Provisioner extends RemoteScript
         $this->task('Granting service-control permissions', fn () => $this->configureSudoers());
         $this->task('Configuring the firewall', $this->configureFirewall());
 
-        // Hardening runs only after the deploy user exists and has inherited the
-        // SSH key, so disabling password auth can never lock anyone out.
         $this->task('Installing security packages', $this->aptInstall('fail2ban', 'unattended-upgrades'));
-        $this->task('Hardening SSH access', fn () => $this->hardenSsh());
         $this->task('Enabling automatic security updates', fn () => $this->configureUnattendedUpgrades());
         $this->task('Configuring log rotation', fn () => $this->configureLogRotation());
 
@@ -497,9 +500,12 @@ class Provisioner extends RemoteScript
     }
 
     /**
-     * Turn off SSH password authentication, leaving only key-based login. By
-     * this point the deploy user has inherited the key that connected as root,
-     * so this closes the password brute-force vector without risking lockout.
+     * Turn off SSH password authentication, leaving only key-based login — the
+     * single biggest reduction in attack surface, so it runs early. Key auth is
+     * untouched: provisioning connected with a key, and the deploy user is
+     * created with --disabled-password so it only ever authenticates by key.
+     * (A purely password-authenticated server isn't supported anyway, since the
+     * deploy user needs a key to be reachable.)
      *
      * Written as a drop-in under sshd_config.d (Include-d by default on Ubuntu
      * 22.04+) so the distro's sshd_config stays pristine. Any missing host keys

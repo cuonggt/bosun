@@ -63,6 +63,14 @@ class ProvisionerTest extends TestCase
         }
     }
 
+    public function test_it_sets_the_timezone_to_utc(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertStringContainsString('timedatectl set-timezone UTC', $connection->ranAll());
+    }
+
     public function test_it_prefers_ipv4_before_any_network_step(): void
     {
         $connection = new FakeConnection();
