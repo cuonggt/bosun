@@ -38,19 +38,37 @@ class SetupCommand extends RemoteCommand
             "deploy user <options=bold>{$config['deploy_user']}</>");
         $this->newLine();
 
-        $status = $this->runScript(new Provisioner(
-            $this->makeConnection($server),
-            $server,
-            $config,
-        ));
+        $provisioner = new Provisioner($this->makeConnection($server), $server, $config);
+
+        $status = $this->runScript($provisioner);
 
         if ($status === Command::SUCCESS) {
+            $this->printDeployKey($provisioner);
+
             $this->newLine();
             $this->components->info("{$server->host} is provisioned and ready.");
             $this->line("  Next: <options=bold>php artisan deploy {$server->name}</>");
         }
 
         return $status;
+    }
+
+    /**
+     * Show the deploy user's public key so the operator can register it as a
+     * read-only deploy key, which is what lets the server clone a private repo.
+     */
+    protected function printDeployKey(Provisioner $provisioner): void
+    {
+        if (! $key = $provisioner->deployPublicKey()) {
+            return;
+        }
+
+        $this->newLine();
+        $this->components->info('Add this read-only deploy key to your Git repository, then deploy:');
+        $this->newLine();
+        $this->line("  {$key}");
+        $this->newLine();
+        $this->line('  <fg=gray>GitHub: Settings → Deploy keys · GitLab: Settings → Repository → Deploy keys</>');
     }
 
     /**

@@ -75,11 +75,24 @@ By default it connects as `root` (override with `--user`). It will:
 1. Update apt and install base utilities.
 2. Install PHP (with the common Laravel extensions, including the MySQL/Postgres PDO drivers), Composer, Nginx, Redis, Supervisor, Node and Certbot.
 3. Create the unprivileged **deploy user**, authorizing the same SSH key you connected with (add another with `--key`).
-4. Grant that user *passwordless* permission to reload PHP-FPM/Nginx and control Supervisor — nothing more.
-5. Configure the firewall (UFW: SSH + HTTP/HTTPS).
-6. Lay out the deploy directory, write the Nginx site and the Supervisor queue worker, then start everything.
+4. Generate an SSH **deploy key** for that user and trust your Git host, so it can clone a private repo (see below).
+5. Grant that user *passwordless* permission to reload PHP-FPM/Nginx and control Supervisor — nothing more.
+6. Configure the firewall (UFW: SSH + HTTP/HTTPS).
+7. Lay out the deploy directory, write the Nginx site and the Supervisor queue worker, then start everything.
 
 Every step is **idempotent**, so re-running `setup` to add an extension or change a setting is safe.
+
+### Private repositories
+
+Use an **SSH** repository URL (`git@github.com:you/app.git`). At the end of `setup`, bosun prints the deploy user's public key:
+
+```
+Add this read-only deploy key to your Git repository, then deploy:
+
+  ssh-ed25519 AAAA… bosun-app@203.0.113.10
+```
+
+Register it as a **read-only deploy key** (GitHub: *Settings → Deploy keys*; GitLab: *Settings → Repository → Deploy keys*), then `php artisan deploy`. The key is per-server, read-only, and regenerated only if absent — so re-running `setup` never invalidates a key you've already registered.
 
 > **Databases are out of scope.** bosun installs the MySQL/Postgres PDO drivers but does not provision a database server. Point your app at a managed or external database by setting `DB_*` in the server's `shared/.env`.
 

@@ -306,6 +306,59 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('systemctl restart logrotate.timer', $ran);
     }
 
+    public function test_it_generates_a_deploy_key_and_seeds_known_hosts(): void
+    {
+        $connection = new FakeConnection();
+        $config = $this->config(['repository' => 'git@github.com:acme/app.git']);
+        (new Provisioner($connection, $this->server(), $config))->execute();
+
+        $ran = $connection->ranAll();
+
+        // An ed25519 deploy key, generated only when missing so re-runs never
+        // rotate a key already registered with the Git host.
+        $this->assertStringContainsString('[ -f /home/deployer/.ssh/id_ed25519 ] || ssh-keygen -t ed25519', $ran);
+
+        // known_hosts seeded for the repository's host so a clone can't fail
+        // host-key verification.
+        $this->assertStringContainsString("ssh-keyscan 'github.com'", $ran);
+        $this->assertStringContainsString('/home/deployer/.ssh/known_hosts', $ran);
+    }
+
+    public function test_known_hosts_falls_back_to_common_providers(): void
+    {
+        $connection = new FakeConnection();
+        // No repository configured at setup time.
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $ran = $connection->ranAll();
+        $this->assertStringContainsString("ssh-keyscan 'github.com'", $ran);
+        $this->assertStringContainsString("ssh-keyscan 'gitlab.com'", $ran);
+        $this->assertStringContainsString("ssh-keyscan 'bitbucket.org'", $ran);
+    }
+
+    public function test_it_reads_back_the_deploy_public_key(): void
+    {
+        $connection = new FakeConnection();
+        $connection->respondToCommandsContaining(
+            'id_ed25519.pub',
+            0,
+            "ssh-ed25519 AAAAC3Nzttttkey bosun-app@host\n",
+        );
+
+        $provisioner = new Provisioner($connection, $this->server(), $this->config());
+
+        $this->assertSame('ssh-ed25519 AAAAC3Nzttttkey bosun-app@host', $provisioner->deployPublicKey());
+    }
+
+    public function test_deploy_public_key_is_null_when_absent(): void
+    {
+        $connection = new FakeConnection();
+
+        $provisioner = new Provisioner($connection, $this->server(), $this->config());
+
+        $this->assertNull($provisioner->deployPublicKey());
+    }
+
     public function test_it_writes_an_nginx_site_for_the_domain(): void
     {
         $connection = new FakeConnection();

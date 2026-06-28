@@ -54,6 +54,7 @@ class Provisioner extends RemoteScript
         $this->task('Installing Certbot (Let\'s Encrypt)', $this->aptInstall('certbot', 'python3-certbot-nginx'));
 
         $this->task("Creating deploy user [{$user}]", fn () => $this->createDeployUser());
+        $this->task('Configuring repository access', fn () => $this->configureRepositoryAccess());
         $this->task('Granting service-control permissions', fn () => $this->configureSudoers());
         $this->task('Configuring the firewall', $this->configureFirewall());
 
@@ -345,6 +346,81 @@ class Provisioner extends RemoteScript
                 "{$home}/.ssh/authorized_keys",
             ));
         }
+    }
+
+    /**
+     * Give the deploy user what it needs to clone a private repository over SSH:
+     * its own ed25519 deploy key, and the git host's keys in known_hosts.
+     *
+     * The key is generated only when missing, so re-running setup never rotates
+     * a key you've already registered as a deploy key. known_hosts is seeded for
+     * the configured repository's host (or the common providers if no repository
+     * is set yet) so a non-interactive clone can't fail host-key verification;
+     * each host is removed and re-scanned so the seeding stays idempotent and
+     * picks up rotated keys.
+     */
+    protected function configureRepositoryAccess(): void
+    {
+        $user = $this->config['deploy_user'];
+        $home = "/home/{$user}";
+        $key = "{$home}/.ssh/id_ed25519";
+        $known = "{$home}/.ssh/known_hosts";
+        $comment = "bosun-{$this->config['application']}@{$this->server->host}";
+
+        $commands = [
+            "mkdir -p {$home}/.ssh && chmod 700 {$home}/.ssh",
+            "[ -f {$key} ] || ssh-keygen -t ed25519 -N '' -C ".escapeshellarg($comment)." -f {$key}",
+            "touch {$known}",
+        ];
+
+        // Append each host's keys only if that exact line isn't already present,
+        // so re-running setup never duplicates entries.
+        foreach ($this->repositoryHosts() as $host) {
+            $commands[] = 'ssh-keyscan '.escapeshellarg($host).' 2>/dev/null | while read -r l; do '
+                .'grep -qxF "$l" '.$known.' || echo "$l" >> '.$known.'; done';
+        }
+
+        $commands[] = "chown -R {$user}:{$user} {$home}/.ssh";
+        $commands[] = "chmod 600 {$key}";
+
+        $this->execChain($commands);
+    }
+
+    /**
+     * The git host(s) to trust in known_hosts. Derived from the configured
+     * repository when possible; otherwise the common providers so a repository
+     * set later still deploys.
+     *
+     * @return array<int, string>
+     */
+    protected function repositoryHosts(): array
+    {
+        $repo = $this->config['repository'] ?? null;
+
+        if (! empty($repo)) {
+            // scp-like syntax: git@host:owner/repo.git
+            if (preg_match('/^[^@\s]+@([^:\/\s]+):/', $repo, $m)) {
+                return [$m[1]];
+            }
+            // URL syntax: scheme://[user@]host[:port]/owner/repo.git
+            if (preg_match('#^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^:/\s]+)#i', $repo, $m)) {
+                return [$m[1]];
+            }
+        }
+
+        return ['github.com', 'gitlab.com', 'bitbucket.org'];
+    }
+
+    /**
+     * Read the deploy user's public key off the server so `setup` can show it.
+     * Returns null if the key isn't present (e.g. provisioning didn't complete).
+     */
+    public function deployPublicKey(): ?string
+    {
+        $user = $this->config['deploy_user'];
+        $key = trim($this->connection->run("cat /home/{$user}/.ssh/id_ed25519.pub 2>/dev/null")->output);
+
+        return $key !== '' ? $key : null;
     }
 
     protected function configureSudoers(): void
