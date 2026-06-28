@@ -269,6 +269,8 @@ class ProvisionerTest extends TestCase
         $conf = $connection->files['/etc/nginx/conf.d/bosun.conf'];
         $this->assertStringContainsString('gzip_comp_level 5;', $conf);
         $this->assertStringContainsString('client_max_body_size 64m;', $conf);
+        // Hide the nginx version banner across every server block.
+        $this->assertStringContainsString('server_tokens off;', $conf);
 
         // gzip is already enabled by the stock nginx.conf; re-declaring it here
         // would be a duplicate directive that fails `nginx -t`.
@@ -370,6 +372,10 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('server_name example.com;', $site);
         $this->assertStringContainsString('root /home/deployer/app/current/public;', $site);
         $this->assertStringContainsString('php8.3-fpm.sock', $site);
+        // Hardening: don't pass non-existent paths to PHP-FPM.
+        $this->assertStringContainsString('try_files $uri =404;', $site);
+        // A per-site error log (rotated by the nginx logrotate cap).
+        $this->assertStringContainsString('error_log /var/log/nginx/app-error.log error;', $site);
     }
 
     public function test_it_adds_a_catch_all_server_when_a_domain_is_set(): void

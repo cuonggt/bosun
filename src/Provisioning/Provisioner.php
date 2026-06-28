@@ -291,6 +291,7 @@ class Provisioner extends RemoteScript
         // sub-directives, which the stock config ships commented out.
         $this->connection->put('/etc/nginx/conf.d/bosun.conf', implode("\n", [
             '# Managed by bosun.',
+            'server_tokens off;',
             'server_names_hash_bucket_size 128;',
             'client_max_body_size 64m;',
             '',
@@ -611,6 +612,7 @@ class Provisioner extends RemoteScript
             'server_name' => $domain,
             'root' => $root,
             'php_version' => $this->server->phpVersion,
+            'app' => $app,
         ]);
 
         $this->connection->put("/etc/nginx/sites-available/{$app}", $config);
