@@ -54,6 +54,11 @@ class DeploymentRunner extends RemoteScript
 
         $this->task('Recording the deployed commit', fn () => $this->recordRevision($release));
         $this->task('Linking shared files and directories', fn () => $this->linkShared($release));
+
+        if (($this->config['database'] ?? null) === 'sqlite') {
+            $this->task('Preparing the SQLite database', fn () => $this->prepareSqlite($release));
+        }
+
         $this->task(
             'Installing Composer dependencies',
             "cd {$release} && composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader"
@@ -129,6 +134,31 @@ class DeploymentRunner extends RemoteScript
         }
 
         $this->execChain($commands);
+    }
+
+    /**
+     * Persist the SQLite database across releases. The file lives inside the
+     * repo (database/database.sqlite), so without this every deploy would swap
+     * in the release's copy and lose data. We keep it in shared/, symlink it
+     * into the release, and make it group-writable so php-fpm (www-data, with
+     * the deploy user in its group) can write rows and the -journal/-wal files
+     * beside it. A fresh empty file is a valid empty database; an existing one
+     * is left untouched so data survives.
+     */
+    protected function prepareSqlite(string $release): void
+    {
+        $shared = $this->path().'/shared/database/database.sqlite';
+        $dir = dirname($shared);
+
+        $this->execChain([
+            "mkdir -p {$dir}",
+            "[ -f {$shared} ] || touch {$shared}",
+            "chgrp www-data {$dir} {$shared}",
+            "chmod 775 {$dir}",
+            "chmod 664 {$shared}",
+            "rm -f {$release}/database/database.sqlite",
+            "ln -nfs {$shared} {$release}/database/database.sqlite",
+        ]);
     }
 
     protected function optimize(string $release): void

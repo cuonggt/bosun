@@ -130,6 +130,35 @@ class DeploymentRunnerTest extends TestCase
         $this->assertStringContainsString('php artisan migrate --force', $connection->ranAll());
     }
 
+    public function test_sqlite_database_is_persisted_and_writable(): void
+    {
+        $connection = new FakeConnection();
+        (new DeploymentRunner($connection, $this->server(), $this->config(['database' => 'sqlite'])))->execute();
+
+        $ran = $connection->ranAll();
+
+        // The DB file lives in shared/ and is symlinked into the release, so it
+        // survives deploys instead of being replaced by the release's copy.
+        $this->assertStringContainsString('/home/deployer/app/shared/database/database.sqlite', $ran);
+        $this->assertStringContainsString(
+            'ln -nfs /home/deployer/app/shared/database/database.sqlite '
+                .'/home/deployer/app/releases/',
+            $ran,
+        );
+
+        // Group-writable so php-fpm (www-data) can write rows and journal files.
+        $this->assertStringContainsString('chgrp www-data', $ran);
+        $this->assertStringContainsString('chmod 664 /home/deployer/app/shared/database/database.sqlite', $ran);
+    }
+
+    public function test_sqlite_handling_is_skipped_by_default(): void
+    {
+        $connection = new FakeConnection();
+        (new DeploymentRunner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertStringNotContainsString('database/database.sqlite', $connection->ranAll());
+    }
+
     public function test_hooks_run_in_their_phases(): void
     {
         $connection = new FakeConnection();

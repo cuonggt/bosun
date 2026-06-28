@@ -70,6 +70,7 @@ trait InteractsWithServers
             'domain' => $serverConfig['domain'] ?? config('bosun.domain'),
             'repository' => $serverConfig['repository'] ?? config('bosun.repository'),
             'branch' => $serverConfig['branch'] ?? config('bosun.branch', 'main'),
+            'database' => $serverConfig['database'] ?? config('bosun.database'),
             'shared_files' => config('bosun.shared_files', ['.env']),
             'shared_dirs' => config('bosun.shared_dirs', ['storage']),
             'keep_releases' => config('bosun.keep_releases', 5),

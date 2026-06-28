@@ -94,7 +94,7 @@ Add this read-only deploy key to your Git repository, then deploy:
 
 Register it as a **read-only deploy key** (GitHub: *Settings → Deploy keys*; GitLab: *Settings → Repository → Deploy keys*), then `php artisan deploy`. The key is per-server, read-only, and regenerated only if absent — so re-running `setup` never invalidates a key you've already registered.
 
-> **Databases are out of scope.** bosun installs the MySQL/Postgres PDO drivers but does not provision a database server. Point your app at a managed or external database by setting `DB_*` in the server's `shared/.env`.
+> **Databases are out of scope** — with one exception. bosun installs the MySQL/Postgres/SQLite PDO drivers but does not provision a database *server*; point your app at a managed or external database via `DB_*` in the server's `shared/.env`. For **SQLite**, set `database` to `"sqlite"` (or `DEPLOY_DATABASE=sqlite`) and bosun keeps `database/database.sqlite` in `shared/` — symlinked into each release and writable by the web server — so it persists across deploys.
 
 ```bash
 php artisan setup production --user=root --key=~/.ssh/deploy_key.pub

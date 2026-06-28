@@ -100,6 +100,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Database
+    |--------------------------------------------------------------------------
+    |
+    | bosun does not provision a database server — point your app at a managed
+    | or external one via shared/.env. The exception is SQLite: set this to
+    | "sqlite" and bosun keeps database/database.sqlite in "shared" (writable by
+    | the web server) so it persists across deploys. Leave it null otherwise.
+    |
+    */
+
+    'database' => env('DEPLOY_DATABASE'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Releases To Keep
     |--------------------------------------------------------------------------
     |
