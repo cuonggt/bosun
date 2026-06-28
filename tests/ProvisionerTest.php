@@ -372,6 +372,53 @@ class ProvisionerTest extends TestCase
         $this->assertStringContainsString('php8.3-fpm.sock', $site);
     }
 
+    public function test_it_adds_a_catch_all_server_when_a_domain_is_set(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config(['domain' => 'example.com'])))->execute();
+
+        $ran = $connection->ranAll();
+
+        // A self-signed cert is generated for the HTTPS default server.
+        $this->assertStringContainsString('openssl req -x509', $ran);
+
+        $this->assertArrayHasKey('/etc/nginx/sites-available/000-catch-all', $connection->files);
+        $catch = $connection->files['/etc/nginx/sites-available/000-catch-all'];
+        $this->assertStringContainsString('default_server', $catch);
+        $this->assertStringContainsString('return 444;', $catch);
+        $this->assertStringContainsString('ln -nfs /etc/nginx/sites-available/000-catch-all', $ran);
+    }
+
+    public function test_it_skips_the_catch_all_without_a_domain(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config(['domain' => ''])))->execute();
+
+        // Without a domain the app intentionally answers on "_", so no catch-all.
+        $this->assertArrayNotHasKey('/etc/nginx/sites-available/000-catch-all', $connection->files);
+        $this->assertStringContainsString('rm -f /etc/nginx/sites-enabled/000-catch-all', $connection->ranAll());
+    }
+
+    public function test_cloudflare_real_ip_is_off_by_default(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config()))->execute();
+
+        $this->assertArrayNotHasKey('/etc/nginx/conf.d/cloudflare.conf', $connection->files);
+        $this->assertStringContainsString('rm -f /etc/nginx/conf.d/cloudflare.conf', $connection->ranAll());
+    }
+
+    public function test_cloudflare_real_ip_can_be_enabled(): void
+    {
+        $connection = new FakeConnection();
+        (new Provisioner($connection, $this->server(), $this->config(['cloudflare' => true])))->execute();
+
+        $this->assertArrayHasKey('/etc/nginx/conf.d/cloudflare.conf', $connection->files);
+        $conf = $connection->files['/etc/nginx/conf.d/cloudflare.conf'];
+        $this->assertStringContainsString('set_real_ip_from 173.245.48.0/20;', $conf);
+        $this->assertStringContainsString('real_ip_header CF-Connecting-IP;', $conf);
+    }
+
     public function test_it_writes_a_supervisor_worker(): void
     {
         $connection = new FakeConnection();

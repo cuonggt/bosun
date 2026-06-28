@@ -60,7 +60,7 @@ Each server is an entry under `servers` in the config file, so you can define `p
 | `deploy_path` | Where the app lives on the server. `{application}` is substituted. | `/home/deployer/{application}` |
 | `php` / `node` | Stack to provision. | `8.3` / `20` |
 
-App-wide options (outside `servers`): `repository`, `branch`, `shared_files`, `shared_dirs`, `keep_releases`, `build_assets`, `queue`, and `hooks`.
+App-wide options (outside `servers`): `repository`, `branch`, `database`, `cloudflare`, `shared_files`, `shared_dirs`, `keep_releases`, `build_assets`, `queue`, and `hooks`. Set `cloudflare` to `true` if the site sits behind Cloudflare, so Nginx logs the real visitor IP.
 
 ## Provisioning a server
 
@@ -78,7 +78,7 @@ By default it connects as `root` (override with `--user`). It will:
 4. Generate an SSH **deploy key** for that user and trust your Git host, so it can clone a private repo (see below).
 5. Grant that user *passwordless* permission to reload PHP-FPM/Nginx and control Supervisor — nothing more.
 6. Configure the firewall (UFW: SSH + HTTP/HTTPS).
-7. Lay out the deploy directory, write the Nginx site and the Supervisor queue worker, then start everything.
+7. Lay out the deploy directory, write the Nginx site and the Supervisor queue worker, then start everything. When a domain is set, a catch-all server rejects requests that don't match it (so the app never answers on the bare IP or a spoofed `Host`).
 
 Every step is **idempotent**, so re-running `setup` to add an extension or change a setting is safe.
 

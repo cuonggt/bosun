@@ -114,6 +114,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Cloudflare
+    |--------------------------------------------------------------------------
+    |
+    | When the site sits behind Cloudflare, enable this so Nginx trusts
+    | Cloudflare's IP ranges and logs the real visitor IP (via CF-Connecting-IP)
+    | instead of Cloudflare's. Leave it off if you don't use Cloudflare.
+    |
+    */
+
+    'cloudflare' => env('DEPLOY_CLOUDFLARE', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Releases To Keep
     |--------------------------------------------------------------------------
     |

@@ -298,10 +298,48 @@ class Provisioner extends RemoteScript
             'gzip_min_length 256;',
             'gzip_proxied any;',
             'gzip_vary on;',
-            'gzip_types application/json application/javascript application/xml '
-                .'application/rss+xml text/css text/plain image/svg+xml;',
+            'gzip_types',
+            '    application/atom+xml application/javascript application/json application/ld+json',
+            '    application/manifest+json application/rss+xml application/vnd.ms-fontobject',
+            '    application/x-font-ttf application/x-web-app-manifest+json application/xhtml+xml',
+            '    application/xml font/opentype image/svg+xml image/x-icon text/cache-manifest',
+            '    text/css text/plain text/vcard text/vtt text/x-component text/x-cross-domain-policy;',
             '',
         ]));
+
+        // Trust Cloudflare's edge IPs only when opted in, so $remote_addr is the
+        // real visitor. Removed when disabled so toggling off is clean.
+        if ($this->config['cloudflare'] ?? false) {
+            $this->connection->put('/etc/nginx/conf.d/cloudflare.conf', $this->cloudflareConf());
+        } else {
+            $this->exec('rm -f /etc/nginx/conf.d/cloudflare.conf');
+        }
+    }
+
+    /**
+     * Cloudflare edge ranges plus the header carrying the real client IP. The
+     * list can drift as Cloudflare changes ranges; refresh it from
+     * https://www.cloudflare.com/ips/ if visitor IPs look wrong.
+     */
+    protected function cloudflareConf(): string
+    {
+        $ranges = [
+            '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+            '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+            '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+            '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+            '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
+            '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+        ];
+
+        $lines = ['# Managed by bosun — trust Cloudflare so $remote_addr is the real visitor.'];
+        foreach ($ranges as $range) {
+            $lines[] = "set_real_ip_from {$range};";
+        }
+        $lines[] = 'real_ip_header CF-Connecting-IP;';
+        $lines[] = '';
+
+        return implode("\n", $lines);
     }
 
     protected function installNode(): string
@@ -579,9 +617,56 @@ class Provisioner extends RemoteScript
 
         $this->execChain([
             "ln -nfs /etc/nginx/sites-available/{$app} /etc/nginx/sites-enabled/{$app}",
-            'rm -f /etc/nginx/sites-enabled/default',
-            'nginx -t',
+            'rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default',
         ]);
+
+        // Reject requests that don't match the configured domain (the bare IP,
+        // spoofed Host headers, scanners) instead of serving the app. Only with
+        // a real domain — without one the app intentionally answers on "_".
+        if ($this->config['domain']) {
+            $this->configureCatchAll();
+        } else {
+            $this->exec('rm -f /etc/nginx/sites-enabled/000-catch-all');
+        }
+
+        $this->exec('nginx -t');
+    }
+
+    /**
+     * A default server that rejects (444) any request whose Host doesn't match a
+     * configured site. The self-signed cert exists only so the HTTPS default
+     * server is valid on nginx 1.18 (Ubuntu 22.04, which lacks
+     * ssl_reject_handshake); it's never trusted. RSA-2048 keygen is fast, so no
+     * slow dhparam is generated, and the cert is created only once.
+     */
+    protected function configureCatchAll(): void
+    {
+        $this->exec(
+            'mkdir -p /etc/nginx/ssl && [ -f /etc/nginx/ssl/catch-all.crt ] || '
+            .'openssl req -x509 -nodes -newkey rsa:2048 -days 3650 '
+            .'-keyout /etc/nginx/ssl/catch-all.key -out /etc/nginx/ssl/catch-all.crt '
+            ."-subj '/CN=catch-all' 2>/dev/null"
+        );
+
+        $this->connection->put('/etc/nginx/sites-available/000-catch-all', implode("\n", [
+            'server {',
+            '    listen 80 default_server;',
+            '    listen [::]:80 default_server;',
+            '    listen 443 ssl default_server;',
+            '    listen [::]:443 ssl default_server;',
+            '    server_name _;',
+            '    server_tokens off;',
+            '',
+            '    ssl_certificate /etc/nginx/ssl/catch-all.crt;',
+            '    ssl_certificate_key /etc/nginx/ssl/catch-all.key;',
+            '    ssl_protocols TLSv1.2 TLSv1.3;',
+            '',
+            '    return 444;',
+            '}',
+            '',
+        ]));
+
+        $this->exec('ln -nfs /etc/nginx/sites-available/000-catch-all /etc/nginx/sites-enabled/000-catch-all');
     }
 
     protected function configureSupervisor(): void
